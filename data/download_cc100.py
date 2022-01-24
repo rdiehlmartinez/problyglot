@@ -9,7 +9,6 @@ import requests
 import os
 import random
 
-from multiprocessing.dummy import Pool 
 from urllib.request import urlretrieve
 
 from time import sleep
@@ -24,7 +23,7 @@ DATA_DIR_PATH = os.path.join(os.getcwd(), DATA_DIR_NAME)
 link_href_urls = []
 
 def download_data(link_href_url):
-    sleep(random.random() * 3) # get around API limiting parallel download
+    sleep(random.randint(5, 10))
     href, url = link_href_url
     print(f".Downloading file: {href}")
     destination = os.path.join(DATA_DIR_PATH, href)
@@ -53,11 +52,8 @@ def main():
         if os.path.exists(os.path.join(DATA_DIR_PATH, link_href)):
             print(f"...Skipping data for language: {link_lng} already downloaded")
             continue
-        
-        link_href_urls.append((link_href, link_url))
 
-    threadpool = Pool(len(link_href_urls))
-    result = threadpool.map(download_data, link_href_urls)
+        download_data((link_href, link_url))
 
 if __name__ == '__main__':
     main()
