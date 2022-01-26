@@ -27,7 +27,7 @@ def download_data(link_href_url):
     href, url = link_href_url
     print(f".Downloading file: {href}")
     destination = os.path.join(DATA_DIR_PATH, href)
-    urlretrieve(url, href)
+    urlretrieve(url, destination)
     print(f"...Finished downloading file: {href}")
 
 def main():
