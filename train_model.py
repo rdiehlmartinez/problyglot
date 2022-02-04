@@ -11,6 +11,7 @@ import os
 
 from configparser import ConfigParser
 from src.utils import device, set_seed
+from src.dataset import MetaDataset
 
 '''
 Base utils for setting up training and eval loops.
@@ -50,8 +51,8 @@ def setup(config_file_path):
 @click.command()
 @click.argument('config_fp')
 def main(config_fp):
-    print("hello world")
-    setup(config_fp)
+    config = setup(config_fp)
+    meta_dataset = MetaDataset(config)
 
 if __name__ == '__main__':
     main()
