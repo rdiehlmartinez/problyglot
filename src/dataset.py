@@ -12,33 +12,62 @@ import logging
 import math
 import numpy as np
 
+from torch.utils.data import IterableDataset
 from transformers import XLMRobertaTokenizer
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
+# to stop the huggingface tokenizer from giving the sequence longe than 512 warning 
+logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
+
 # We always use the XLM sentencepiece tokenizer
 tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
 MASK_TOKEN_ID = tokenizer.mask_token_id 
-# to encode any token id we need BYTE_ENCODING_SIZE number of bytes
+# to encode any token id we need BYTE_ENCODING_SIZE number of bytes (hex encoding)
 BYTE_ENCODING_SIZE = math.ceil(math.log(tokenizer.vocab_size + 1, 16)) 
 BYTE_ENDIAN_MODE = 'big'
 BYTE_END_MARKER = tokenizer.vocab_size.to_bytes(BYTE_ENCODING_SIZE, BYTE_ENDIAN_MODE)
 
-class MetaDataset(object):
+class MetaDataset(IterableDataset):
     """
-    MetaDataset that coordinates the generation of datasets for meta-train, -dev and -test.
+    MetaDataset that coordinates the generation of tasks
     """
 
-    '''
-    * Needs to keep track of which words have been included in train/dev/test split 
-    * Initializes BaseDataset datasets that on initialization spin up workers to read in data to a data buffer
-        * there sort into train, eval, test based on some rules 
-    * Implements a sampling procedure to sample the next language 
-    '''
+    def __init__(self, config, split):
+        """ 
+        Initialize datasets for a given split using a config file 
+        """
+        self.split = split 
+        languages = self._get_languages(config, split)
+        self.datasets, self.datasets_md = self._initialize_datasets(languages, config)
+
+        self.task_sampling_method = config.get("META_DATASET", "task_sampling_method", fallback="random")
+        if self.task_sampling_method == 'proportional':
+            self.task_sampling_prop_rate = config.getfloat("META_DATASET", "task_sampling_prop_rate", fallback=0.5)
+        
+        super().__init__()
 
     @staticmethod
-    def _initialize_datasets(languages, data_root, return_metadata=True):
+    def _get_languages(config, split): 
+        """ Helper for reading in languages from config or from a file """    
+        partition_languages = None
+
+        # partition_languages_str can either be empty string, a file name or a 
+        # comma-separated list of iso language codes 
+        partition_languages_str = config.get("META_DATASET", f"{split}_languages", fallback="")
+        if ".txt" in partition_languages_str: 
+            with open(f"configs/demo/{partition_languages_str}") as f: 
+                partition_languages = f.read().splitlines()
+        elif partition_languages_str == "":
+            assert(partition != "train"), "config item for train_languages cannot be empty"
+            pass # return None
+        else: 
+            partition_languages = partition_languages_str.split(",")
+    
+        return partition_languages
+
+    def _initialize_datasets(self, languages, config):
         """ 
         Helper method for setting up datasets 
         Args: 
@@ -62,57 +91,52 @@ class MetaDataset(object):
                 size += os.stat(filepath).st_size
             return size
 
+        logger.info(f"Initializing datasets for (meta) split: {self.split}")
+
+        data_root = config.get("META_DATASET", "root_path")
         datasets = {}
         datasets_md = {}
+
         for language in languages: 
             lng_root_fp = os.path.join(data_root, language)
 
             dataset_size = compute_dataset_size(lng_root_fp)
 
-            dataset = IterableLanguageTaskDataset(lng_root_fp, language, cycle_data=True)
+            # TODO: forward config data to language dataset 
+            dataset = IterableLanguageTaskDataset(lng_root_fp, language)
             
             datasets[language] = dataset
             datasets_md[language] = {"dataset_size": dataset_size} # Can add more metadata 
 
         return datasets, datasets_md 
-
-    @staticmethod
-    def _get_languages(config): 
-        """ Helper for reading in languages from config or from a file """    
-        processed_languages = []    
-        for partition in ["train", "dev", "test"]: 
-            # partition_languages_str can either be empty string, a file name or a 
-            # comma-separated list of iso language codes 
-            partition_languages_str = config.get("DATA", f"{partition}_languages", fallback="")
-            if ".txt" in partition_languages_str: 
-                with open(f"configs/demo/{partition_languages_str}") as f: 
-                            partition_languages = f.read().splitlines()
-                            processed_languages.append(partition_languages)
-            elif partition_languages_str == "":
-                assert(partition != "train"), "config item for train_languages cannot be empty"
-                processed_languages.append(None)
-            else: 
-                partition_languages = partition_languages_str.split(",")
-                processed_languages.append(partition_languages)
         
-        return processed_languages
 
-    def __init__(self, config):
+    def shutdown(self):
         """ 
-        Initialize datasets for meta-train, -dev and -test
+        Shuts down worker nodes spawned by each of the datsets 
         """
+        for _, dataset in self.datasets.items(): 
+            dataset.shutdown()
 
-        train_languages, dev_languages, test_languages =  self._get_languages(config)
-
-        data_root = config.get("DATA", "root_path")
-        self.train_datasets, self.train_datasets_md = self._initialize_datasets(train_languages, data_root)
-
-    def get_dataset(split): 
-        """ 
-        For a given split ('train', 'dev', 'test) generates a dataset for either training or validation
-        """
-        raise NotImplementedError()
-
+    def __next__(self):
+        """ Returns a processed batch of data corresponding to a task"""
+        # sample next task
+        if self.task_sampling_method == 'random':
+            sampled_language = random.sample(self.datasets_md.keys(), k=1)[0]
+        elif self.task_sampling_method == 'proportional':
+            sampling_weights = [v['dataset_size']**self.task_sampling_prop_rate for v in self.datasets_md.values()]
+            sampling_weights = sampling_weights/np.sum(sampling_weights)
+            sampled_language = random.choices(list(self.datasets_md.keys()), weights=sampling_weights, k=1)[0]
+        else: 
+            logger.error(f"Invalid task sampling method: {self.task_sampling_method}")
+            raise Exception(f"Invalid task sampling method: {self.task_sampling_method}")
+        
+        sampled_dataset = self.datasets[sampled_language]
+        return next(sampled_dataset)
+        
+    def __iter__(self):
+        """ IterableDataset expects __iter__ to be overriden"""
+        return self
 
 class IterableLanguageTaskDataset(object): 
     ''' 
@@ -125,9 +149,8 @@ class IterableLanguageTaskDataset(object):
                                 Q = 10,
                                 buffer_size=1e6,
                                 sample_size=10_000,
-                                sampling_method="proportional",
-                                sampling_prop_rate=0.5,
-                                cycle_data=True,
+                                mask_sampling_method="proportional",
+                                mask_sampling_prop_rate=0.5,
                                 **kwargs): 
         """ 
         Initializes params and data buffers for the iterable dataset. 
@@ -152,11 +175,10 @@ class IterableLanguageTaskDataset(object):
             * [optional] buffer_size (int): size of the memory-mapped buffer (defaults to 100,000 bytes)
             * [optional] sample_size (int): number of phrases to sample before returning a sample for 
                 N-way k-shot classification (defaults to 100,000)
-            * [optional] sampling_method (str): either one of 'random' or 'proportional' which specify 
+            * [optional] mask_sampling_method (str): either one of 'random' or 'proportional' which specify 
                 how to sample the N tasks
-            * [optional] sampling_prop_rate (float): used if sampling_method is 'proportional', 
-                speifies the sampling proportional rate so that x~U(x)^{sampling_prop_rate}
-            * [optional] cycle_data (bool): whether to continually cycle over the data (defaults to true)
+            * [optional] mask_sampling_prop_rate (float): used if mask_sampling_method is 'proportional', 
+                speifies the sampling proportional rate so that x~U(x)^{mask_sampling_prop_rate}
         """
         super().__init__()
         self.root_fp = root_fp 
@@ -169,10 +191,9 @@ class IterableLanguageTaskDataset(object):
         if (N*K*1000 > buffer_size): 
             logger.warning(f"The buffer size used in BaseIterableDataset ({buffer_size} bytes) is likely too small")
 
-        self.sample_size = 1000 #sample_size 
-        self.sampling_method = sampling_method
-        self.sampling_prop_rate = sampling_prop_rate
-        self.cycle_data = cycle_data
+        self.sample_size = sample_size
+        self.mask_sampling_method = mask_sampling_method
+        self.mask_sampling_prop_rate = mask_sampling_prop_rate
 
         # event and lock to communicate between parent and child 
         self.event = multiprocessing.Event()
@@ -254,17 +275,17 @@ class IterableLanguageTaskDataset(object):
             f"Not enough data to generate N-way k-shot samples for dataset: {self.langauge}"
 
         # sampling mechanism for getting the N classes
-        if self.sampling_method == 'random': 
+        if self.mask_sampling_method == 'random': 
             sampled_N = random.sample(filtered_subword_to_sample.keys(), k=self.N)
-        elif self.sampling_method == 'proportional':
-            # samples n ~ U(n)^sampling_prop_rate
-            sampling_weights = np.array([len(v)**self.sampling_prop_rate for v in filtered_subword_to_sample.values()])
+        elif self.mask_sampling_method == 'proportional':
+            # samples n ~ U(n)^mask_sampling_prop_rate
+            sampling_weights = np.array([len(v)**self.mask_sampling_prop_rate for v in filtered_subword_to_sample.values()])
             sampling_weights = sampling_weights/np.sum(sampling_weights)
             sampled_N = np.random.choice(list(filtered_subword_to_sample.keys()), self.N, replace=False, p=sampling_weights)
             sampled_N = sampled_N.tolist()
         else: 
-            logger.error(f"Invalid sampling method: {self.sampling_method}")
-            raise Exception(f"Invalid sampling method: {self.sampling_method}")
+            logger.error(f"Invalid mask sampling method: {self.mask_sampling_method}")
+            raise Exception(f"Invalid mask sampling method: {self.mask_sampling_method}")
 
 
         def mask_sample(k_index_information):
@@ -336,8 +357,7 @@ class IterableLanguageTaskDataset(object):
         from where it can be accessed by the parent process to generate train 
         and val data. 
 
-        This method will loop forever if self.cycle_data is set to true. 
-        We usually want to randomly and forever loop over the data so we cycle over 
+        Importantly, we currently continue to loop over the data by cycling over 
         the file paths indefinitely - the worker only stops when it is shut down by
         the main process.
         """
@@ -423,10 +443,6 @@ class IterableLanguageTaskDataset(object):
                 
                 self.release_and_wait()
 
-            if not self.cycle_data:
-                # TODO: implement logic when no more data to feed 
-                self.lock.release()
-                break
 
     def __next__(self): 
         """ 
