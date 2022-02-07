@@ -74,20 +74,6 @@ class MetaDataset(object):
             datasets[language] = dataset
             datasets_md[language] = {"dataset_size": dataset_size} # Can add more metadata 
 
-            # NOTE: Test code
-            num_sec_wait = 10
-            for n in range(4): 
-                print(f"Main loop: starting iteration {n}")
-                print(f"Main loop: Doing some work for {num_sec_wait} seconds")
-                time.sleep(num_sec_wait)
-                print(f"Main loop: Calling next(dataset)")
-                curr_batch = next(dataset)
-                print(f"Main loop: Batch of data")
-                print(curr_batch)
-
-            dataset.shutdown()
-            exit()
-
         return datasets, datasets_md 
 
     @staticmethod
@@ -110,7 +96,6 @@ class MetaDataset(object):
                 processed_languages.append(partition_languages)
         
         return processed_languages
-
 
     def __init__(self, config):
         """ 
@@ -139,8 +124,9 @@ class IterableLanguageTaskDataset(object):
                                 K = 5,
                                 Q = 10,
                                 buffer_size=1e6,
-                                sample_size=100_000,
-                                sampling_method="random",
+                                sample_size=10_000,
+                                sampling_method="proportional",
+                                sampling_prop_rate=0.5,
                                 cycle_data=True,
                                 **kwargs): 
         """ 
@@ -168,21 +154,24 @@ class IterableLanguageTaskDataset(object):
                 N-way k-shot classification (defaults to 100,000)
             * [optional] sampling_method (str): either one of 'random' or 'proportional' which specify 
                 how to sample the N tasks
+            * [optional] sampling_prop_rate (float): used if sampling_method is 'proportional', 
+                speifies the sampling proportional rate so that x~U(x)^{sampling_prop_rate}
             * [optional] cycle_data (bool): whether to continually cycle over the data (defaults to true)
         """
         super().__init__()
         self.root_fp = root_fp 
         self._lng = lng
-        self.N = 3 #N 
-        self.K = 2 #K
+        self.N = N 
+        self.K = K
         self.Q = Q
 
         # NOTE: Each sample requires roughly 1000 bytes to store (~liberal heuristic)
         if (N*K*1000 > buffer_size): 
             logger.warning(f"The buffer size used in BaseIterableDataset ({buffer_size} bytes) is likely too small")
 
-        self.sample_size = 10_000 #sample_size 
+        self.sample_size = 1000 #sample_size 
         self.sampling_method = sampling_method
+        self.sampling_prop_rate = sampling_prop_rate
         self.cycle_data = cycle_data
 
         # event and lock to communicate between parent and child 
@@ -196,7 +185,7 @@ class IterableLanguageTaskDataset(object):
         self.worker = multiprocessing.Process(
             target=self.generate_buffer,
         )
-
+        self.event.set()
         self.worker.start()
 
     @property
@@ -268,11 +257,11 @@ class IterableLanguageTaskDataset(object):
         if self.sampling_method == 'random': 
             sampled_N = random.sample(filtered_subword_to_sample.keys(), k=self.N)
         elif self.sampling_method == 'proportional':
-            # TODO
-            # random.choices
-            # sampling_weights = [len(v) for v in filtered_subword_to_sample.values()]
-            logger.error("Sampling method: proportional has not been implemented yet")
-            raise NotImplementedError()
+            # samples n ~ U(n)^sampling_prop_rate
+            sampling_weights = np.array([len(v)**self.sampling_prop_rate for v in filtered_subword_to_sample.values()])
+            sampling_weights = sampling_weights/np.sum(sampling_weights)
+            sampled_N = np.random.choice(list(filtered_subword_to_sample.keys()), self.N, replace=False, p=sampling_weights)
+            sampled_N = sampled_N.tolist()
         else: 
             logger.error(f"Invalid sampling method: {self.sampling_method}")
             raise Exception(f"Invalid sampling method: {self.sampling_method}")
@@ -333,14 +322,10 @@ class IterableLanguageTaskDataset(object):
         Helper function for releasing a lock and waiting to reacquire the lock
         to begin writing to buffer again.  
         """
-        print("In Child: Finished writing data")
-        print("In Child: calling release_and_wait")
         self.lock.release()
         self.event.clear()
-        print("In Child: waiting for event")
         self.event.wait()
         self.lock.acquire() 
-        print("In Child: Starting to write fresh batch to buffer")
         self.train_data_buffer.seek(0) 
         self.dev_data_buffer.seek(0)
 
@@ -359,7 +344,6 @@ class IterableLanguageTaskDataset(object):
 
         # This lock is acquired when worker is initially launched
         self.lock.acquire()
-        print("In Child: Beginning generate_buffer function")
 
         # keeps track of edge case where the entire dataset is smaller than self.sample_size
         is_too_small = False 
@@ -440,6 +424,7 @@ class IterableLanguageTaskDataset(object):
                 self.release_and_wait()
 
             if not self.cycle_data:
+                # TODO: implement logic when no more data to feed 
                 self.lock.release()
                 break
 
@@ -455,9 +440,12 @@ class IterableLanguageTaskDataset(object):
             * dev_samples {token_id : [Q samples of token_id masked out]}: Mapping of 
                 N different token_ids to Q samples of sentences where the token is masked out.
         """
-        print("In Main: Calling Next()")
+        if self.event.is_set():
+            # self.event should not be set - this can only happen on class initialization if the 
+            # worker node is not fast enough to beat the main node to acquire the lock 
+            time.sleep(1) 
+
         self.lock.acquire()
-        print("In Main: Lock acquired and returning processed buffer")
 
         self.train_data_buffer.seek(0)
         self.dev_data_buffer.seek(0)
@@ -485,7 +473,6 @@ class IterableLanguageTaskDataset(object):
                         curr_sample.append(curr_token)
                     return_dict[curr_n].append(curr_sample)
 
-        print("In Main: finished next() - releasing lock and setting event")
         self.lock.release()
         self.event.set()
         return (train_samples, dev_samples)
