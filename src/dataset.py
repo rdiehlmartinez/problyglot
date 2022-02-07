@@ -74,6 +74,18 @@ class MetaDataset(object):
             datasets[language] = dataset
             datasets_md[language] = {"dataset_size": dataset_size} # Can add more metadata 
 
+            # NOTE: Test code
+            num_sec_wait = 10
+            for n in range(4): 
+                print(f"Main loop: starting iteration {n}")
+                print(f"Main loop: Doing some work for {num_sec_wait} seconds")
+                time.sleep(num_sec_wait)
+                print(f"Main loop: Calling next(dataset)")
+                curr_batch = next(dataset)
+                print(f"Main loop: Batch of data")
+                print(curr_batch)
+
+            dataset.shutdown()
             exit()
 
         return datasets, datasets_md 
@@ -161,19 +173,20 @@ class IterableLanguageTaskDataset(object):
         super().__init__()
         self.root_fp = root_fp 
         self._lng = lng
-        self.N = N 
-        self.K = K
+        self.N = 3 #N 
+        self.K = 2 #K
         self.Q = Q
 
         # NOTE: Each sample requires roughly 1000 bytes to store (~liberal heuristic)
         if (N*K*1000 > buffer_size): 
             logger.warning(f"The buffer size used in BaseIterableDataset ({buffer_size} bytes) is likely too small")
 
-        self.sample_size = sample_size 
+        self.sample_size = 10_000 #sample_size 
         self.sampling_method = sampling_method
         self.cycle_data = cycle_data
 
-        # lock to communicate between parent and child 
+        # event and lock to communicate between parent and child 
+        self.event = multiprocessing.Event()
         self.lock = multiprocessing.Lock()
 
         # Extract data out of the buffers for train and dev (i.e. support and query)
@@ -320,9 +333,14 @@ class IterableLanguageTaskDataset(object):
         Helper function for releasing a lock and waiting to reacquire the lock
         to begin writing to buffer again.  
         """
+        print("In Child: Finished writing data")
+        print("In Child: calling release_and_wait")
         self.lock.release()
-        time.sleep(1) 
+        self.event.clear()
+        print("In Child: waiting for event")
+        self.event.wait()
         self.lock.acquire() 
+        print("In Child: Starting to write fresh batch to buffer")
         self.train_data_buffer.seek(0) 
         self.dev_data_buffer.seek(0)
 
@@ -341,6 +359,7 @@ class IterableLanguageTaskDataset(object):
 
         # This lock is acquired when worker is initially launched
         self.lock.acquire()
+        print("In Child: Beginning generate_buffer function")
 
         # keeps track of edge case where the entire dataset is smaller than self.sample_size
         is_too_small = False 
@@ -398,6 +417,7 @@ class IterableLanguageTaskDataset(object):
             
             if total_samples_processed < self.sample_size: 
                 # will possibly trigger after first pass through the entire dataset 
+                logger.warning(f"Size of dataset for language {self.language}: {total_samples_processed} is smaller than {self.sample_size} samples")
                 is_too_small = True
 
             if is_too_small: 
@@ -435,8 +455,9 @@ class IterableLanguageTaskDataset(object):
             * dev_samples {token_id : [Q samples of token_id masked out]}: Mapping of 
                 N different token_ids to Q samples of sentences where the token is masked out.
         """
-
+        print("In Main: Calling Next()")
         self.lock.acquire()
+        print("In Main: Lock acquired and returning processed buffer")
 
         self.train_data_buffer.seek(0)
         self.dev_data_buffer.seek(0)
@@ -447,19 +468,26 @@ class IterableLanguageTaskDataset(object):
         for return_dict, data_buffer, num_samples_per_n in [(train_samples, self.train_data_buffer, self.K),
                                                             (dev_samples, self.dev_data_buffer, self.Q)]:
             for n in range(self.N): 
-                curr_n = int.from_bytes(self.data_buffer.read(BYTE_ENCODING_SIZE), BYTE_ENDIAN_MODE)
-                assert(self.data_buffer.read(BYTE_ENCODING_SIZE) == BYTE_END_MARKER)
+
+                curr_n = int.from_bytes(data_buffer.read(BYTE_ENCODING_SIZE), BYTE_ENDIAN_MODE)
+
+                # If the bytes following the initial token_id are not the end_marker then
+                # buffer state is wrong 
+                assert(data_buffer.read(BYTE_ENCODING_SIZE) == BYTE_END_MARKER)
+
                 for k in range(num_samples_per_n):
                     curr_sample = []
                     while True: 
-                        curr_encoded_token = self.data_buffer.read(BYTE_ENCODING_SIZE)
+                        curr_encoded_token = data_buffer.read(BYTE_ENCODING_SIZE)
                         if (curr_encoded_token == BYTE_END_MARKER):
                             break
                         curr_token = int.from_bytes(curr_encoded_token, BYTE_ENDIAN_MODE)
                         curr_sample.append(curr_token)
                     return_dict[curr_n].append(curr_sample)
 
+        print("In Main: finished next() - releasing lock and setting event")
         self.lock.release()
+        self.event.set()
         return (train_samples, dev_samples)
 
     def __iter__(self):
