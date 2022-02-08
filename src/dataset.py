@@ -24,6 +24,7 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR
 # We always use the XLM sentencepiece tokenizer
 tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
 MASK_TOKEN_ID = tokenizer.mask_token_id 
+
 # to encode any token id we need BYTE_ENCODING_SIZE number of bytes (hex encoding)
 BYTE_ENCODING_SIZE = math.ceil(math.log(tokenizer.vocab_size + 1, 16)) 
 BYTE_ENDIAN_MODE = 'big'
@@ -34,13 +35,13 @@ class MetaDataset(IterableDataset):
     MetaDataset that coordinates the generation of tasks
     """
 
-    def __init__(self, config, split):
+    def __init__(self, config, meta_split):
         """ 
         Initialize datasets for a given split using a config file 
         """
-        self.split = split 
-        languages = self._get_languages(config, split)
-        self.datasets, self.datasets_md = self._initialize_datasets(languages, config)
+        self.meta_split = meta_split 
+        languages = self._get_languages(config, meta_split)
+        self.datasets, self.datasets_md = self._initialize_datasets(config, languages)
 
         self.task_sampling_method = config.get("META_DATASET", "task_sampling_method", fallback="random")
         if self.task_sampling_method == 'proportional':
@@ -49,15 +50,21 @@ class MetaDataset(IterableDataset):
         super().__init__()
 
     @staticmethod
-    def _get_languages(config, split): 
-        """ Helper for reading in languages from config or from a file """    
+    def _get_languages(config, meta_split): 
+        """
+        Helper for reading in languages from config or from a file that are associated with a 
+        given meta_split. 
+        
+        Returns:
+            * partition_languages [List(str)]: List of languages in iso-code format.
+        """    
         partition_languages = None
 
-        # partition_languages_str can either be empty string, a file name or a 
+        # partition_languages_str can either be empty string, a file path or a 
         # comma-separated list of iso language codes 
-        partition_languages_str = config.get("META_DATASET", f"{split}_languages", fallback="")
+        partition_languages_str = config.get("META_DATASET", f"{meta_split}_languages", fallback="")
         if ".txt" in partition_languages_str: 
-            with open(f"configs/demo/{partition_languages_str}") as f: 
+            with open(partition_languages_str, "r") as f: 
                 partition_languages = f.read().splitlines()
         elif partition_languages_str == "":
             assert(partition != "train"), "config item for train_languages cannot be empty"
@@ -67,18 +74,16 @@ class MetaDataset(IterableDataset):
     
         return partition_languages
 
-    def _initialize_datasets(self, languages, config):
+    def _initialize_datasets(self, config, languages):
         """ 
         Helper method for setting up datasets 
         Args: 
+            * config: parsed config file passed from __init__ 
             * languages [List]: list of languages stored as iso-codes 
-            * data_root (str): File path of root of data directory
-            * [optional] return_metadata (bool): whether to return meta-data associated with the data,
-                such as the amount of data available for a given language 
         Returns:
             * datasets {lng: BaseIterableDataset}: Returns a dictionary mapping a specific 
                 language to the associated dataset for that language 
-            * datasets {lng: dict()}: Returns a dictionary mapping a specific language to 
+            * datasets_md {lng: dict()}: Returns a dictionary mapping a specific language to 
                 metadata associated with the dataset for that language
 
         """
@@ -91,7 +96,7 @@ class MetaDataset(IterableDataset):
                 size += os.stat(filepath).st_size
             return size
 
-        logger.info(f"Initializing datasets for (meta) split: {self.split}")
+        logger.info(f"Initializing datasets for (meta) split: {self.meta_split}")
 
         data_root = config.get("META_DATASET", "root_path")
         datasets = {}
@@ -102,14 +107,13 @@ class MetaDataset(IterableDataset):
 
             dataset_size = compute_dataset_size(lng_root_fp)
 
-            # TODO: forward config data to language dataset 
-            dataset = IterableLanguageTaskDataset(lng_root_fp, language)
+            language_task_dataset_kwargs = dict(config.items('LANGUAGE_TASK_DATASET'))
+            dataset = IterableLanguageTaskDataset(lng_root_fp, language, **language_task_dataset_kwargs)
             
             datasets[language] = dataset
             datasets_md[language] = {"dataset_size": dataset_size} # Can add more metadata 
 
         return datasets, datasets_md 
-        
 
     def shutdown(self):
         """ 
@@ -119,8 +123,17 @@ class MetaDataset(IterableDataset):
             dataset.shutdown()
 
     def __next__(self):
-        """ Returns a processed batch of data corresponding to a task"""
-        # sample next task
+        """
+        Called by MetaDataLoader to iterate over the dataset. First samples a language (i.e. a task)
+        from which to sample a support and query set. 
+
+        Returns: 
+            * Tuple containing: 
+                * sampled language (str): language of sample
+                * Another tuple storing the data for the support and query sets which
+                is returned from calling next on the IterableLanguageTaskDataset dataset.
+        """
+        # sample next task either randomly or proportional to size of dataset
         if self.task_sampling_method == 'random':
             sampled_language = random.sample(self.datasets_md.keys(), k=1)[0]
         elif self.task_sampling_method == 'proportional':
@@ -132,7 +145,7 @@ class MetaDataset(IterableDataset):
             raise Exception(f"Invalid task sampling method: {self.task_sampling_method}")
         
         sampled_dataset = self.datasets[sampled_language]
-        return next(sampled_dataset)
+        return (sampled_language, next(sampled_dataset))
         
     def __iter__(self):
         """ IterableDataset expects __iter__ to be overriden"""
@@ -144,9 +157,9 @@ class IterableLanguageTaskDataset(object):
     and returns at each iteration some N-way K-shot example
     '''
     def __init__(self, root_fp, lng, 
-                                N = 10,
-                                K = 5,
-                                Q = 10,
+                                n = 10,
+                                k = 5,
+                                q = 10,
                                 buffer_size=1e6,
                                 sample_size=10_000,
                                 mask_sampling_method="proportional",
@@ -168,13 +181,13 @@ class IterableLanguageTaskDataset(object):
                 stored. This directory can have many files which are all 
                 expected to be .txt.gz files, where each line is a new sample.
             * lng (str): iso code for the language corresponding to the dataset
-            * [optional] N (int): The N in N-way K-shot classification (defaults to 10)
-            * [optional] K (int): The K in N-way K-shot classification (defaults to 5)
-            * [optional] Q (int: The number of samples in the query set for each 'task' (defaults to 10)
+            * [optional] n (int): The N in N-way K-shot classification (defaults to 10)
+            * [optional] k (int): The K in N-way K-shot classification (defaults to 5)
+            * [optional] q (int: The number of samples in the query set for each 'task' (defaults to 10)
                 Thus for each class, we must find K+Q examples of that class
             * [optional] buffer_size (int): size of the memory-mapped buffer (defaults to 100,000 bytes)
             * [optional] sample_size (int): number of phrases to sample before returning a sample for 
-                N-way k-shot classification (defaults to 100,000)
+                N-way k-shot classification (defaults to 10,000)
             * [optional] mask_sampling_method (str): either one of 'random' or 'proportional' which specify 
                 how to sample the N tasks
             * [optional] mask_sampling_prop_rate (float): used if mask_sampling_method is 'proportional', 
@@ -183,25 +196,27 @@ class IterableLanguageTaskDataset(object):
         super().__init__()
         self.root_fp = root_fp 
         self._lng = lng
-        self.N = N 
-        self.K = K
-        self.Q = Q
+        self.N = int(n)
+        self.K = int(k)
+        self.Q = int(q)
+
+        buffer_size = int(buffer_size)
 
         # NOTE: Each sample requires roughly 1000 bytes to store (~liberal heuristic)
-        if (N*K*1000 > buffer_size): 
+        if (self.N*self.K*1000 > buffer_size): 
             logger.warning(f"The buffer size used in BaseIterableDataset ({buffer_size} bytes) is likely too small")
 
-        self.sample_size = sample_size
+        self.sample_size = int(sample_size)
         self.mask_sampling_method = mask_sampling_method
-        self.mask_sampling_prop_rate = mask_sampling_prop_rate
+        self.mask_sampling_prop_rate = float(mask_sampling_prop_rate)
 
         # event and lock to communicate between parent and child 
         self.event = multiprocessing.Event()
         self.lock = multiprocessing.Lock()
 
-        # Extract data out of the buffers for train and dev (i.e. support and query)
-        self.train_data_buffer = mmap.mmap(-1, length=int(buffer_size))
-        self.dev_data_buffer = mmap.mmap(-1, length=int(buffer_size))
+        # Extract data out of the buffers for support and query
+        self.support_data_buffer = mmap.mmap(-1, length=buffer_size)
+        self.query_data_buffer = mmap.mmap(-1, length=buffer_size)
         
         self.worker = multiprocessing.Process(
             target=self.generate_buffer,
@@ -219,6 +234,61 @@ class IterableLanguageTaskDataset(object):
         self.worker.terminate()
         self.worker.join()
 
+    def __next__(self): 
+        """ 
+        NOTE: Called from main process
+        Reads and returns the data that has been stored in the support_data_buffer and the 
+        query_data_buffer by the worker node.
+
+        Returns: 
+            * support_samples {token_id : [K samples of token_id masked out]}: Mapping of 
+                N different token_ids to K samples of sentences where the token is masked out.
+            * query_samples {token_id : [Q samples of token_id masked out]}: Mapping of 
+                N different token_ids to Q samples of sentences where the token is masked out.
+        """
+        if self.event.is_set():
+            # self.event should not be set - this can only happen on class initialization if the 
+            # worker node is not fast enough to beat the main node to acquire the lock 
+            time.sleep(1) 
+
+        self.lock.acquire()
+
+        self.support_data_buffer.seek(0)
+        self.query_data_buffer.seek(0)
+
+        support_samples = defaultdict(list)
+        query_samples = defaultdict(list)
+
+        for return_dict, data_buffer, num_samples_per_n in [(support_samples, self.support_data_buffer, self.K),
+                                                            (query_samples, self.query_data_buffer, self.Q)]:
+            for n in range(self.N): 
+
+                curr_n = int.from_bytes(data_buffer.read(BYTE_ENCODING_SIZE), BYTE_ENDIAN_MODE)
+
+                # If the bytes following the initial token_id are not the end_marker then
+                # buffer state is wrong 
+                assert(data_buffer.read(BYTE_ENCODING_SIZE) == BYTE_END_MARKER)
+
+                for k in range(num_samples_per_n):
+                    curr_sample = []
+                    while True: 
+                        curr_encoded_token = data_buffer.read(BYTE_ENCODING_SIZE)
+                        if (curr_encoded_token == BYTE_END_MARKER):
+                            break
+                        curr_token = int.from_bytes(curr_encoded_token, BYTE_ENDIAN_MODE)
+                        curr_sample.append(curr_token)
+                    return_dict[curr_n].append(curr_sample)
+
+        self.lock.release()
+        self.event.set()
+        return (support_samples, query_samples)
+
+    def __iter__(self):
+        """ To comply with iterator protocol """
+        return self
+
+
+    # NOTE: 
     # --- The following methods should only be called by the child process ---
     
     @staticmethod
@@ -243,7 +313,7 @@ class IterableLanguageTaskDataset(object):
     def generate_N_K_samples(self, curr_subword_to_sample, curr_samples):
         """
         Given a set of samples (curr_samples) drawn from the dataset generates a 
-        sample for N-way K-shot classification + Q samples for the query set 
+        sample for N-way K-shot classification support set + Q samples for the query set 
 
         Args: 
             * curr_subword_to_sample {subword_token: [(index of occurence in curr_samples,
@@ -347,15 +417,15 @@ class IterableLanguageTaskDataset(object):
         self.event.clear()
         self.event.wait()
         self.lock.acquire() 
-        self.train_data_buffer.seek(0) 
-        self.dev_data_buffer.seek(0)
+        self.support_data_buffer.seek(0) 
+        self.query_data_buffer.seek(0)
 
     def generate_buffer(self):
         """ 
         NOTE: This should only ever be run by a child worker. 
         This method generates a stream of data that is stored in a buffer 
-        from where it can be accessed by the parent process to generate train 
-        and val data. 
+        from where it can be accessed by the parent process to generate support 
+        and query data. 
 
         Importantly, we currently continue to loop over the data by cycling over 
         the file paths indefinitely - the worker only stops when it is shut down by
@@ -405,8 +475,8 @@ class IterableLanguageTaskDataset(object):
 
                             # writing data out to buffer 
                             try:
-                                self.write_to_buffer(support_set, self.train_data_buffer)
-                                self.write_to_buffer(query_set, self.dev_data_buffer)
+                                self.write_to_buffer(support_set, self.support_data_buffer)
+                                self.write_to_buffer(query_set, self.query_data_buffer)
                             except ValueError as e: 
                                 raise Exception(f"Buffer for dataset: {self.language} ran out of space")
 
@@ -431,8 +501,8 @@ class IterableLanguageTaskDataset(object):
 
                 # writing data out to buffer 
                 try:
-                    self.write_to_buffer(support_set, self.train_data_buffer)
-                    self.write_to_buffer(query_set, self.dev_data_buffer)
+                    self.write_to_buffer(support_set, self.support_data_buffer)
+                    self.write_to_buffer(query_set, self.query_data_buffer)
                 except ValueError as e: 
                     raise Exception(f"Buffer for dataset: {self.language} ran out of space")
 
@@ -442,57 +512,3 @@ class IterableLanguageTaskDataset(object):
                 curr_subword_to_sample = defaultdict(list)
                 
                 self.release_and_wait()
-
-
-    def __next__(self): 
-        """ 
-        NOTE: Called from main process
-        Reads and returns the data that has been stored in the train_data_buffer and the 
-        dev_data_buffer by the worker node.
-
-        Returns: 
-            * train_samples {token_id : [K samples of token_id masked out]}: Mapping of 
-                N different token_ids to K samples of sentences where the token is masked out.
-            * dev_samples {token_id : [Q samples of token_id masked out]}: Mapping of 
-                N different token_ids to Q samples of sentences where the token is masked out.
-        """
-        if self.event.is_set():
-            # self.event should not be set - this can only happen on class initialization if the 
-            # worker node is not fast enough to beat the main node to acquire the lock 
-            time.sleep(1) 
-
-        self.lock.acquire()
-
-        self.train_data_buffer.seek(0)
-        self.dev_data_buffer.seek(0)
-
-        train_samples = defaultdict(list)
-        dev_samples = defaultdict(list)
-
-        for return_dict, data_buffer, num_samples_per_n in [(train_samples, self.train_data_buffer, self.K),
-                                                            (dev_samples, self.dev_data_buffer, self.Q)]:
-            for n in range(self.N): 
-
-                curr_n = int.from_bytes(data_buffer.read(BYTE_ENCODING_SIZE), BYTE_ENDIAN_MODE)
-
-                # If the bytes following the initial token_id are not the end_marker then
-                # buffer state is wrong 
-                assert(data_buffer.read(BYTE_ENCODING_SIZE) == BYTE_END_MARKER)
-
-                for k in range(num_samples_per_n):
-                    curr_sample = []
-                    while True: 
-                        curr_encoded_token = data_buffer.read(BYTE_ENCODING_SIZE)
-                        if (curr_encoded_token == BYTE_END_MARKER):
-                            break
-                        curr_token = int.from_bytes(curr_encoded_token, BYTE_ENDIAN_MODE)
-                        curr_sample.append(curr_token)
-                    return_dict[curr_n].append(curr_sample)
-
-        self.lock.release()
-        self.event.set()
-        return (train_samples, dev_samples)
-
-    def __iter__(self):
-        """ To comply with iterator protocol """
-        return self
