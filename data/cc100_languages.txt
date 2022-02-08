@@ -70,7 +70,6 @@ si
 sd
 sk
 sl
-so
 sq
 sr
 su
