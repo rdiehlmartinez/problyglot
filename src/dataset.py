@@ -119,6 +119,7 @@ class MetaDataset(IterableDataset):
         """ 
         Shuts down worker nodes spawned by each of the datsets 
         """
+        logger.info("Shutting down worker nodes for data processing")
         for _, dataset in self.datasets.items(): 
             dataset.shutdown()
 
