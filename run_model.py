@@ -64,6 +64,8 @@ def main(config_fp):
     train_meta_dataloader = MetaDataLoader(train_meta_dataset)
     problyglot = Problyglot(config)
 
+    problyglot.train(train_meta_dataloader)
+
     train_meta_dataset.shutdown()
 
 if __name__ == '__main__':
