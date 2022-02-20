@@ -22,6 +22,8 @@ class BaseLearner(metaclass=abc.ABCMeta):
         Args:
             * support_batch: a dictionary containing the following information for the support set
                 * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
+                * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
+                    the final classification layer 
                 * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
                 * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are not pad tokens
             * query_batch [optional]: same as support_batch, but for the data of the query set. This
@@ -40,6 +42,8 @@ class BaseLearner(metaclass=abc.ABCMeta):
         Args: 
             * support_batch: a dictionary containing the following information for the support set
                 * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
+                * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
+                    the final classification layer 
                 * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
                 * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are not pad tokens
             * query_batch: same as support_batch, but for the data of the query set 

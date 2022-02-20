@@ -74,9 +74,11 @@ class Platipus(BaseLearner):
         self.task_embedding_method = task_embedding_method
         
         
-    def adapt_params(self, inputs, attention_mask, labels, params, task_classifier, learning_rate):
+    def adapt_params(self, input_ids, input_target_idx, attention_mask, label_ids,
+                           params, task_classifier, learning_rate):
         """ 
-        Adapted from: https://github.com/cnguyen10/few_shot_meta_learning/blob/2b075a5e5de4f81670ae8340e87acfc4d5e9bbc3/Platipus.py#L28
+        Adapted from: 
+        https://github.com/cnguyen10/few_shot_meta_learning/blob/2b075a5e5de4f81670ae8340e87acfc4d5e9bbc3/Platipus.py#L28
         """
 
         # copy the parameters but allow gradients to propagate back to original params
@@ -84,14 +86,20 @@ class Platipus(BaseLearner):
 
         for _ in range(self.num_inner_steps): 
             print("inside adapt params - passing inputs to model")
-            outputs = self.functional_model.forward(input_ids=inputs,
-                                                   attention_mask=attention_mask,
-                                                   params=cloned_params)
+            outputs = self.functional_model.forward(input_ids=input_ids,
+                                                    attention_mask=attention_mask,
+                                                    params=cloned_params)
 
             # last_hidden_state has form (batch_size, sequence_length, hidden_size);
             # note hidden_size = self.base_model_hidden_dim
             last_hidden_state = outputs.last_hidden_state
             logits = task_classifier(last_hidden_state)
+
+            print(logits.shape)
+            print(input_target_idx)
+            print(input_ids[0])
+            print(input_ids[0][input_target_idx[0]])
+            exit()
 
             loss = self.loss_function(input=logits, target=labels)
 
@@ -128,6 +136,8 @@ class Platipus(BaseLearner):
         Args: 
             * support_batch: a dictionary containing the following information for the support set
                 * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
+                * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
+                    the final classification layer 
                 * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
                 * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are not pad tokens
             * query_batch: same as support_batch, but for the data of the query set 
@@ -136,23 +146,18 @@ class Platipus(BaseLearner):
             * loss (torch.Tensor): loss value of the inner loop calculations
         """
 
-        support_input_ids = support_batch['input_ids']
-        support_attention_mask = support_batch['attention_mask']
-        support_label_ids = support_batch['label_ids']
-
-        query_input_ids = query_batch['input_ids']
-        query_attention_mask = query_batch['attention_mask']
-        query_label_ids = query_batch['label_ids']
-
         # automatically infer the number N of classes
-        n_classes = torch.unique(support_label_ids).numel()
+        n_classes = torch.unique(support_batch['label_ids']).numel()
+
         # TODO allow task classifier to be initialized with some 'smart weights' (protoMAML style)
         task_classifier = torch.nn.Linear(self.base_model_hidden_dim, n_classes)
 
         # TODO: implement task embedding 
-        update_mu_theta = self.adapt_params(query_input_ids, query_attention_mask, query_label_ids,
-                                            params=self.mu_theta, task_classifier=task_classifier, learning_rate=self.gamma_q)
+        update_mu_theta = self.adapt_params(**support_batch, params=self.mu_theta,
+                                                             task_classifier=task_classifier,
+                                                             learning_rate=self.gamma_q)
         
+
         # sampling using updated mu_theta 
         # TODO
         # theta = [None] * len(self.params[0]) 
@@ -169,6 +174,8 @@ class Platipus(BaseLearner):
         Args: 
             * support_batch: a dictionary containing the following information for the support set
                 * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
+                * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
+                    the final classification layer 
                 * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
                 * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are not pad tokens
             * query_batch: same as support_batch, but for the data of the query set 

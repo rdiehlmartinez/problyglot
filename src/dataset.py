@@ -24,6 +24,7 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR
 # We always use the XLM sentencepiece tokenizer
 tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
 MASK_TOKEN_ID = tokenizer.mask_token_id 
+CLS_TOKEN_ID = tokenizer.cls_token_id
 
 # to encode any token id we need BYTE_ENCODING_SIZE number of bytes (hex encoding)
 BYTE_ENCODING_SIZE = math.ceil(math.log(tokenizer.vocab_size + 1, 16)) 
