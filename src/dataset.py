@@ -318,7 +318,7 @@ class IterableLanguageTaskDataset(object):
 
         Args: 
             * curr_subword_to_sample {subword_token: [(index of occurence in curr_samples,
-                                                       index of occurence within a sample)]:
+                                                       index of occurence within the sample)]:
                 A dictionary mapping a current subword token to a tuple containing: 
                 1. the index of the sample in curr_samples where that subword token occurs and 
                 2. within the given sample the index of the location where that token occurs
@@ -378,7 +378,7 @@ class IterableLanguageTaskDataset(object):
         for sampled_n in sampled_N: 
             # for each class i.e. n in {1,..., N} generate k sentences randomly
             # note that in a given sample there might be multiple occurences of a token
-            # so we need to specify which token it is we want to 
+            # so we need to specify which token it is we want to mask
             subword_indices = filtered_subword_to_sample[sampled_n]
 
             sampled_K_plus_Q_indices = random.sample(subword_indices, k=(self.K + self.Q))
