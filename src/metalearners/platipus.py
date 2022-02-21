@@ -1,6 +1,8 @@
+__author__ = 'Richard Diehl Martinez '
 """
-PLATIPUS Model Implementation: https://arxiv.org/pdf/1806.02817.pdf
-Copied from open-source repo: 
+Implementation of the platipus model, proposed by Finn et el. https://arxiv.org/pdf/1806.02817.pdf
+
+Implementation is lightly adapted from the open-source repo: 
 https://github.com/cnguyen10/few_shot_meta_learning/blob/2b075a5e5de4f81670ae8340e87acfc4d5e9bbc3/Platipus.py#L28
 """
 
@@ -13,12 +15,15 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from .base import BaseLearner
+from ..utils.modeling import kl_divergence_gaussians
 
 logger = logging.getLogger(__name__)
 
 class Platipus(BaseLearner):
     def __init__(self, base_model,  optimizer_type='adam',
                                     meta_lr=0.01,
+                                    inner_lr=0.01,
+                                    kl_weight=0.5,
                                     loss_function="cross_entropy",
                                     num_inner_steps=3,
                                     use_first_order=False,
@@ -60,13 +65,20 @@ class Platipus(BaseLearner):
         else: 
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
 
-        self.num_inner_steps = int(num_inner_steps)
-        
+        # fixed learning rate used for finetune adapting task-specific phi weights
+        self.inner_lr = float(inner_lr)
+
+        # hyper-param for trading off ce-loss and kl-loss
+        self.kl_weight = float(kl_weight)
+
         # defining loss function 
         if loss_function == 'cross_entropy':
             self.loss_function = torch.nn.CrossEntropyLoss()
         else: 
             raise Exception(f"Invalid loss function: {loss_function}")
+
+        # number of steps to perform in the inner loop
+        self.num_inner_steps = int(num_inner_steps)
         
         # set flag to indicate if first-order approximation should be used (à la Reptile)
         if isinstance(use_first_order, str):
@@ -88,7 +100,6 @@ class Platipus(BaseLearner):
         cloned_params = [torch.clone(p) for p in params]
 
         for _ in range(self.num_inner_steps): 
-            print("inside adapt params - passing inputs to model")
             outputs = self.functional_model.forward(input_ids=input_ids,
                                                     attention_mask=attention_mask,
                                                     params=cloned_params)
@@ -107,7 +118,6 @@ class Platipus(BaseLearner):
             loss = self.loss_function(input=logits, target=label_ids)
             grad_params = [p for p in cloned_params if p.requires_grad]
 
-            print("inside adapt params - taking gradients")
             if self.use_first_order:
                 grads = torch.autograd.grad(
                     outputs=loss,
@@ -123,7 +133,6 @@ class Platipus(BaseLearner):
                     allow_unused=True,
                 )
             
-            print("inside adapt params - updating parameters")
             # updating params
             grad_counter = 0
             for idx, p in enumerate(cloned_params):
@@ -164,19 +173,46 @@ class Platipus(BaseLearner):
         task_classifier = torch.nn.Linear(self.base_model_hidden_dim, n_classes).to(self.device)
 
         # TODO: implement task embedding 
-        update_mu_theta = self.adapt_params(**query_batch, params=self.mu_theta,
-                                                           task_classifier=task_classifier,
-                                                           learning_rate=self.gamma_q)
-        print("got updated mu theta")
-        exit()
-        # sampling using updated mu_theta 
-        # TODO
-        # theta = [None] * len(self.params[0]) 
-        # for i in range(len(theta)):
-        #     theta[i] = updated_mu_theta[i] + \
-        #         torch.randn_like(input=updated_mu_theta[i], device=device) * torch.exp(input=self.params[2]) 
+        # mu theta adapted to the query set
+        mu_theta_query = self.adapt_params(**query_batch, params=self.mu_theta,
+                                                          task_classifier=task_classifier,
+                                                          learning_rate=self.gamma_q)
         
-        # phi = self.adapt_params(support_inputs, support_labels, params=self.params[0], learning_rate=self.params[3])
+        # sampling from task specific distribution updated mu_theta 
+        theta = [None] * len(self.mu_theta) 
+        for i in range(len(theta)):
+            theta[i] = mu_theta_query[i] + \
+                torch.randn_like(input=mu_theta_query[i], device=self.device) * torch.exp(input=self.log_v_q[i])
+
+        # TODO - adapt the task_classifier this time 
+        # adapting to the support set 
+        phi = self.adapt_params(**support_batch, params=theta,
+                                                 task_classifier=task_classifier,
+                                                 learning_rate=self.inner_lr)
+
+        # computing CE loss on the query set with updated phi params
+        outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
+                                                attention_mask=query_batch['attention_mask'],
+                                                params=phi)
+
+        last_hidden_state = outputs.last_hidden_state
+        batch_size = last_hidden_state.size(0)
+        last_hidden_state = last_hidden_state[torch.arange(batch_size), query_batch['input_target_idx']]
+        logits = task_classifier(last_hidden_state)
+
+        ce_loss = self.loss_function(input=logits, target=query_batch['label_ids'])
+
+        # computing KL loss (requires adapting mu_theta to the support set)
+        
+        # mu theta adapted to the support set (line 10 from algorithm 1)
+        mu_theta_support = self.adapt_params(**support_batch, params=self.mu_theta,
+                                                              task_classifier=task_classifier,
+                                                              learning_rate=self.gamma_p)
+
+        kl_loss = kl_divergence_gaussians(p=[*mu_theta_query, *self.log_v_q], q=[*mu_theta_support, *self.log_sigma_theta])
+
+        loss = ce_loss + self.kl_weight * kl_loss
+        return loss
 
     def run_evaluation(self, support_batch, query_batch, *args, **learner_kwargs):
         """ 
