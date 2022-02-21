@@ -1,6 +1,8 @@
 # Problyglot : A framework for Proabilistic Graphical Language Training
 
 
+* Test on GPU 
+
 Feature Requests (marked with priority): 
 * Implement protoMAML (better initialization of the final classification layer) [1]
 * Task embedding implementations [2]

@@ -53,8 +53,9 @@ def meta_collate(batch):
 
         for idx, (_, subword_samples) in enumerate(batch_samples.items()):
             # randomly assigns each subword_idx to a number in range(N)
-            batch_labels.append(idx) 
+            # recall batch_samples is a dict({tok id: [samples]})
             for subword_sample in subword_samples:
+                batch_labels.append(idx) 
                 if len(subword_sample) > batch_max_seq_len:
                     batch_max_seq_len = len(subword_sample)
                 batch_inputs.append(subword_sample)

@@ -2,6 +2,8 @@ import torch
 import random
 import numpy as np
 
+from .data import move_to_device
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def set_seed(seed=42):
