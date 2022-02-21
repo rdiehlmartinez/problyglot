@@ -13,7 +13,6 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from .base import BaseLearner
-from ..utils import device
 
 logger = logging.getLogger(__name__)
 
@@ -24,36 +23,40 @@ class Platipus(BaseLearner):
                                     num_inner_steps=3,
                                     use_first_order=False,
                                     task_embedding_method='val_grad',
+                                    device="cpu",
                                     *args,
                                     **kwargs):
         """
         # TODO - add doc string 
         """
+        super().__init__()
+
+        self.device = device
 
         # getting functional form of the model
         self.functional_model = higher.patch.make_functional(module=base_model)
 
         # hidden dimensions of the outputs of the base_model
         self.base_model_hidden_dim = base_model.hidden_dim 
-
+        
         # establishing meta parameters to-be learned
         self.mu_theta = [] 
         self.log_sigma_theta = []
         self.log_v_q = []
         for param in base_model.parameters():
-            self.mu_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape), requires_grad=param.requires_grad).to(device))
-            self.log_sigma_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape), requires_grad=param.requires_grad).to(device))
-            self.log_v_q.append(torch.nn.Parameter(data=torch.randn(size=param.shape), requires_grad=param.requires_grad).to(device))
+            self.mu_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device), requires_grad=param.requires_grad))
+            self.log_sigma_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device), requires_grad=param.requires_grad))
+            self.log_v_q.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device), requires_grad=param.requires_grad))
 
-        self.gamma_p = [torch.nn.Parameter(data=torch.tensor(0.01)).to(device)]
-        self.gamma_q = [torch.nn.Parameter(data=torch.tensor(0.01)).to(device)]
+        self.gamma_p = torch.nn.Parameter(data=torch.tensor(0.01).to(self.device))
+        self.gamma_q = torch.nn.Parameter(data=torch.tensor(0.01).to(self.device))
 
-        all_params = itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, self.gamma_p, self.gamma_q)
+        self.all_meta_params = itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, [self.gamma_p, self.gamma_q])
 
         # loading in meta optimizer 
         self.meta_lr = float(meta_lr)
         if optimizer_type == 'adam': 
-            self.optimizer = torch.optim.Adam(params=all_params, lr=self.meta_lr)
+            self.optimizer = torch.optim.Adam(params=self.all_meta_params, lr=self.meta_lr)
         else: 
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
 
@@ -73,7 +76,6 @@ class Platipus(BaseLearner):
 
         self.task_embedding_method = task_embedding_method
         
-        
     def adapt_params(self, input_ids, input_target_idx, attention_mask, label_ids,
                            params, task_classifier, learning_rate):
         """ 
@@ -82,6 +84,7 @@ class Platipus(BaseLearner):
         """
 
         # copy the parameters but allow gradients to propagate back to original params
+        # TODO: check if this is equivalent to original implementation
         cloned_params = [torch.clone(p) for p in params]
 
         for _ in range(self.num_inner_steps): 
@@ -91,34 +94,42 @@ class Platipus(BaseLearner):
                                                     params=cloned_params)
 
             # last_hidden_state has form (batch_size, sequence_length, hidden_size);
-            # note hidden_size = self.base_model_hidden_dim
+            # where hidden_size = self.base_model_hidden_dim
             last_hidden_state = outputs.last_hidden_state
+
+            # indexing into sequence layer of last_hidden state -> (batch_size, hidden_size) 
+            batch_size = last_hidden_state.size(0)
+            last_hidden_state = last_hidden_state[torch.arange(batch_size), input_target_idx]
+
+            # (batch_size, num_classes) 
             logits = task_classifier(last_hidden_state)
 
-            print(logits.shape)
-            print(input_target_idx)
-            print(input_ids[0])
-            print(input_ids[0][input_target_idx[0]])
-            exit()
+            loss = self.loss_function(input=logits, target=label_ids)
+            grad_params = [p for p in cloned_params if p.requires_grad]
 
-            loss = self.loss_function(input=logits, target=labels)
-
+            print("inside adapt params - taking gradients")
             if self.use_first_order:
                 grads = torch.autograd.grad(
                     outputs=loss,
-                    inputs=params_copy,
-                    retain_graph=True
+                    inputs=grad_params,
+                    retain_graph=True, # TODO: check if this is required
+                    allow_unused=True,
                 )
             else:
                 grads = torch.autograd.grad(
                     outputs=loss,
-                    inputs=params_copy,
-                    create_graph=True
+                    inputs=grad_params,
+                    create_graph=True,
+                    allow_unused=True,
                 )
             
-            # take inner-loop update step
-            for i in range(len(params_copy)):
-                cloned_params[i] = cloned_params[i] - learning_rate * grads[i]
+            print("inside adapt params - updating parameters")
+            # updating params
+            grad_counter = 0
+            for idx, p in enumerate(cloned_params):
+                if p.requires_grad:
+                    cloned_params[idx] = cloned_params[idx] - learning_rate * grads[grad_counter]
+                    grad_counter += 1
         
         return cloned_params
 
@@ -126,7 +137,7 @@ class Platipus(BaseLearner):
         """ Take a global update step of self.params """
         self.optimizer.step()
         if set_zero_grad:
-            self.optimzer.zero_grad()
+            self.optimizer.zero_grad()
 
     def run_inner_loop(self, support_batch, query_batch, *args, **kwargs): 
         """
@@ -150,14 +161,14 @@ class Platipus(BaseLearner):
         n_classes = torch.unique(support_batch['label_ids']).numel()
 
         # TODO allow task classifier to be initialized with some 'smart weights' (protoMAML style)
-        task_classifier = torch.nn.Linear(self.base_model_hidden_dim, n_classes)
+        task_classifier = torch.nn.Linear(self.base_model_hidden_dim, n_classes).to(self.device)
 
         # TODO: implement task embedding 
-        update_mu_theta = self.adapt_params(**support_batch, params=self.mu_theta,
-                                                             task_classifier=task_classifier,
-                                                             learning_rate=self.gamma_q)
-        
-
+        update_mu_theta = self.adapt_params(**query_batch, params=self.mu_theta,
+                                                           task_classifier=task_classifier,
+                                                           learning_rate=self.gamma_q)
+        print("got updated mu theta")
+        exit()
         # sampling using updated mu_theta 
         # TODO
         # theta = [None] * len(self.params[0]) 

@@ -10,7 +10,7 @@ import click
 import os
 
 from configparser import ConfigParser
-from src.utils import device, set_seed
+from src.utils import set_seed
 from src.dataset import MetaDataset
 from src.dataloader import MetaDataLoader
 from src.problyglot import Problyglot
@@ -44,7 +44,6 @@ def setup_logger(config_file_path):
                         ]
     )
     logging.info(f"Initializing experiment: {experiment_directory}")
-    logging.info(f"Running model on device: {device}")
 
 def setup(config_file_path):
     ''' 

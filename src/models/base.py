@@ -21,6 +21,10 @@ class BaseModel(metaclass=abc.ABCMeta):
         raise NotImplementedError()
 
     @abc.abstractmethod
+    def to(self, *args, **kwargs):
+        """ Move model onto a given device """
+
+    @abc.abstractmethod
     def forward(self, *args, **kwargs):
         """ Must implement a forward pass through the model """
         raise NotImplementedError()

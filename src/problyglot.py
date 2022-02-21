@@ -6,7 +6,7 @@ import logging
 
 from .models import XLMR
 from .metalearners import Platipus
-from .utils import device
+from .utils import device as DEFAULT_DEVICE, move_to_device
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,9 @@ class Problyglot(object):
         # config params need to be accessed by several methods
         self.config = config
 
+        self.device = config.get("PROBLYGLOT", "device", fallback=DEFAULT_DEVICE)
+        logger.info(f"Running problyglot on device: {self.device}")
+
         base_model_name = config.get("BASE_MODEL", "name")
         self.base_model = self.load_model(base_model_name)
         
@@ -31,7 +34,7 @@ class Problyglot(object):
         self.num_tasks_per_iteration = config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
 
     def load_model(self, base_model_name):
-        """Helper function for reading in base model"""
+        """Helper function for reading in base model - should be intialized with from_kwargs() class method """
         logger.info(f"Loading base model: {base_model_name}")
         model = None
         model_kwargs = dict(self.config.items("BASE_MODEL"))
@@ -41,6 +44,7 @@ class Problyglot(object):
             raise Exception(f"Invalid base model type: {base_model_name}")
 
         model = model_cls.from_kwargs(**model_kwargs)
+        model.to(self.device)
 
         logger.debug("Base Model Architecture: ")
         logger.debug(model)
@@ -52,8 +56,10 @@ class Problyglot(object):
         logger.info(f"Using learner: {learner_method}")
         learner = None
         learner_kwargs = dict(self.config.items("LEARNER"))
+        # NOTE: if any of the learners' params need to be on the GPU the learner class should take care of 
+        # moving these params over during initialization
         if learner_method == 'platipus':
-            learner = Platipus(self.base_model, **learner_kwargs)
+            learner = Platipus(self.base_model, device=self.device, **learner_kwargs)
         else:
             raise Exception(f"Invalid learner method: learner_method")
 
@@ -68,10 +74,12 @@ class Problyglot(object):
         num_task_batches = 0 # counter tracks number of batches of tasks seen by metalearner
 
         for batch_idx, batch in enumerate(train_dataloader):
-            batch_language, support_batch, query_batch = batch
+            task_name, support_batch, query_batch = batch
 
-            print(f"got data for language: {batch_language}")
+            support_batch = move_to_device(support_batch, self.device)
+            query_batch = move_to_device(query_batch, self.device)
 
+            print(f"got data for task: {task_name}")
 
             task_batch_loss = 0. # training loss on the batch of tasks
             for task_idx in range(self.num_tasks_per_iteration): 

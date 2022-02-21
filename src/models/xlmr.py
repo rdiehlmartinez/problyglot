@@ -7,7 +7,6 @@ import logging
 
 from transformers import XLMRobertaModel
 from .base import BaseModel
-from ..utils import device
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,7 @@ class XLMR(XLMRobertaModel):
         """ Loading in huggingface XLM-R model for masked LM """
         
         if pretrained_model_name:
-            model = cls.from_pretrained(pretrained_model_name).to(device)
+            model = cls.from_pretrained(pretrained_model_name)
 
             # https://multimodal-toolkit.readthedocs.io/en/latest/_modules/transformers/configuration_xlm_roberta.html
             if 'base' in pretrained_model_name:
