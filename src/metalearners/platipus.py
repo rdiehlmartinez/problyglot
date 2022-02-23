@@ -10,8 +10,10 @@ import typing
 import higher 
 import logging
 import itertools
+import math
 
 import torch
+import torch.nn.functional as F 
 from torch.utils.tensorboard import SummaryWriter
 
 from .base import BaseLearner
@@ -34,6 +36,7 @@ class Platipus(BaseLearner):
         """
         # TODO - add doc string 
         """
+
         super().__init__()
 
         self.device = device
@@ -49,7 +52,7 @@ class Platipus(BaseLearner):
         self.log_sigma_theta = []
         self.log_v_q = []
         for param in base_model.parameters():
-            self.mu_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device), requires_grad=param.requires_grad))
+            self.mu_theta.append(param) # global mean parameters initialized as the weights of the base model
             self.log_sigma_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device), requires_grad=param.requires_grad))
             self.log_v_q.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device), requires_grad=param.requires_grad))
 
@@ -89,10 +92,13 @@ class Platipus(BaseLearner):
         self.task_embedding_method = task_embedding_method
         
     def adapt_params(self, input_ids, input_target_idx, attention_mask, label_ids,
-                           params, task_classifier, learning_rate):
+                           params, task_classifier_weights, learning_rate, optimize_classifier=False):
         """ 
         Adapted from: 
         https://github.com/cnguyen10/few_shot_meta_learning/blob/2b075a5e5de4f81670ae8340e87acfc4d5e9bbc3/Platipus.py#L28
+
+        Params:
+
         """
 
         # copy the parameters but allow gradients to propagate back to original params
@@ -113,7 +119,7 @@ class Platipus(BaseLearner):
             last_hidden_state = last_hidden_state[torch.arange(batch_size), input_target_idx]
 
             # (batch_size, num_classes) 
-            logits = task_classifier(last_hidden_state)
+            logits = F.linear(last_hidden_state, **task_classifier_weights)
 
             loss = self.loss_function(input=logits, target=label_ids)
             grad_params = [p for p in cloned_params if p.requires_grad]
@@ -122,15 +128,13 @@ class Platipus(BaseLearner):
                 grads = torch.autograd.grad(
                     outputs=loss,
                     inputs=grad_params,
-                    retain_graph=True, # TODO: check if this is required
-                    allow_unused=True,
+                    retain_graph=True,
                 )
             else:
                 grads = torch.autograd.grad(
                     outputs=loss,
                     inputs=grad_params,
                     create_graph=True,
-                    allow_unused=True,
                 )
             
             # updating params
@@ -139,7 +143,19 @@ class Platipus(BaseLearner):
                 if p.requires_grad:
                     cloned_params[idx] = cloned_params[idx] - learning_rate * grads[grad_counter]
                     grad_counter += 1
-        
+
+            # optionally use SGD to update the weights of the final linear classification layer
+            if optimize_classifier:
+              
+                classifier_grads = torch.autograd.grad(
+                    outputs=loss,
+                    inputs=[task_classifier_weights["weight"], task_classifier_weights["bias"]],
+                    retain_graph=True,
+                )
+
+                task_classifier_weights["weight"] = task_classifier_weights["weight"] - learning_rate * classifier_grads[0]
+                task_classifier_weights["bias"] =  task_classifier_weights["bias"] - learning_rate * classifier_grads[1]
+
         return cloned_params
 
     def optimizer_step(self, set_zero_grad=True):
@@ -147,6 +163,44 @@ class Platipus(BaseLearner):
         self.optimizer.step()
         if set_zero_grad:
             self.optimizer.zero_grad()
+    
+    def _initialize_task_classifier_weights(self, n_classes, method='xavier_normal'):
+        """ 
+        Initialize the weight and bias layer of the final classification layer to classify 
+        n_classes number of classes for the current task.
+
+        Args: 
+            * n_classes (int): Number of classes 
+            * method (str): Method for weight initialization
+        Returns: 
+            * task_classifier_weights (dict): {
+                * weight -> (torch.Tensor): classification weight matrix
+                * bias -> (torch.Tensor): classification bias vector
+                }
+        """
+
+        # TODO allow task classifier to be initialized with some 'smart weights' (protoMAML style)
+
+        if method == 'xavier_normal':
+            # Xavier normal weight implementation
+            std_weight = math.sqrt(2.0/ float(self.base_model_hidden_dim + n_classes))
+            std_bias = math.sqrt(2.0 / float(n_classes))
+
+            # weights need to be shape (out_features, in_features) to be compatible with functional linear
+            classifier_weight = torch.randn((n_classes, self.base_model_hidden_dim), device=self.device) * std_weight
+            classifier_bias = torch.randn((n_classes), device=self.device) * std_bias
+        else:
+            raise NotImplementedError(f"Task classification weight initialization method: {method} not supported")
+
+        classifier_weight.requires_grad = True
+        classifier_bias.requires_grad = True
+
+        task_classifier_weights = { 
+            "weight": classifier_weight,
+            "bias": classifier_bias
+        }
+
+        return task_classifier_weights
 
     def run_inner_loop(self, support_batch, query_batch, *args, **kwargs): 
         """
@@ -168,14 +222,13 @@ class Platipus(BaseLearner):
 
         # automatically infer the number N of classes
         n_classes = torch.unique(support_batch['label_ids']).numel()
-
-        # TODO allow task classifier to be initialized with some 'smart weights' (protoMAML style)
-        task_classifier = torch.nn.Linear(self.base_model_hidden_dim, n_classes).to(self.device)
+        task_classifier_weights = self._initialize_task_classifier_weights(n_classes)
 
         # TODO: implement task embedding 
+
         # mu theta adapted to the query set
         mu_theta_query = self.adapt_params(**query_batch, params=self.mu_theta,
-                                                          task_classifier=task_classifier,
+                                                          task_classifier_weights=task_classifier_weights,
                                                           learning_rate=self.gamma_q)
         
         # sampling from task specific distribution updated mu_theta 
@@ -184,11 +237,11 @@ class Platipus(BaseLearner):
             theta[i] = mu_theta_query[i] + \
                 torch.randn_like(input=mu_theta_query[i], device=self.device) * torch.exp(input=self.log_v_q[i])
 
-        # TODO - adapt the task_classifier this time 
         # adapting to the support set 
         phi = self.adapt_params(**support_batch, params=theta,
-                                                 task_classifier=task_classifier,
-                                                 learning_rate=self.inner_lr)
+                                                 task_classifier_weights=task_classifier_weights,
+                                                 learning_rate=self.inner_lr,
+                                                 optimize_classifier=True)
 
         # computing CE loss on the query set with updated phi params
         outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
@@ -198,15 +251,15 @@ class Platipus(BaseLearner):
         last_hidden_state = outputs.last_hidden_state
         batch_size = last_hidden_state.size(0)
         last_hidden_state = last_hidden_state[torch.arange(batch_size), query_batch['input_target_idx']]
-        logits = task_classifier(last_hidden_state)
+        logits = F.linear(last_hidden_state, **task_classifier_weights)
 
         ce_loss = self.loss_function(input=logits, target=query_batch['label_ids'])
 
         # computing KL loss (requires adapting mu_theta to the support set)
         
-        # mu theta adapted to the support set (line 10 from algorithm 1)
+        # mu theta adapted to the support set (line 10 from algorithm 1) 
         mu_theta_support = self.adapt_params(**support_batch, params=self.mu_theta,
-                                                              task_classifier=task_classifier,
+                                                              task_classifier_weights=task_classifier_weights,
                                                               learning_rate=self.gamma_p)
 
         kl_loss = kl_divergence_gaussians(p=[*mu_theta_query, *self.log_v_q], q=[*mu_theta_support, *self.log_sigma_theta])
