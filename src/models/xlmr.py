@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 @BaseModel.register
 class XLMR(XLMRobertaModel):
+    """ Implementation of XLM-r model (Conneau et al. 2019) https://arxiv.org/abs/1911.02116 """
 
     @classmethod
     def from_kwargs(cls, pretrained_model_name='xlm-roberta-base', 

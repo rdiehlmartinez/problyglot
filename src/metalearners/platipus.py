@@ -1,4 +1,5 @@
-__author__ = 'Richard Diehl Martinez '
+__author__ = 'Richard Diehl Martinez'
+
 """
 Implementation of the platipus model, proposed by Finn et el. https://arxiv.org/pdf/1806.02817.pdf
 
@@ -34,7 +35,29 @@ class Platipus(BaseLearner):
                                     *args,
                                     **kwargs):
         """
-        # TODO - add doc string 
+        Platipus implements a type of BaseLearner.
+
+        Reads in a base model and converts the model into a functional 'state-less' version of the model, using 
+        the higher library. Platipus requires tracking meta parameters that represent the mean and 
+        standard deviations of the weights that are to-be meta-learned. These meta parameters are stored 
+        as internal attributes of platipus, and are learned via an optimizer of type (optimizer_type). The main
+        logic of platipus is in the run_inner_loop() and run_evaluation() methods which implement the training 
+        and inference steps of platipus. 
+
+        Args: 
+            * base_model (implementation of BaseModel)
+            * optimizer_type (str) : the type of the optimizer (defaults to 'adam')
+            * meta_lr (float): learning rate for the outer loop meta learning step (defaults to 0.01)
+            * inner_lr (float): learning rate for the inner loop adaptation step (defaults to 0.01)
+            * kl_weight (float): trade-off hyper-parameter between the CE term and the KL term of the ELBO (defaults to 0.5)
+            * loss_function (str): loss function of the tasks we are classiying (defaults to 'cross_entropy')
+            * num_inner_steps (int): number of gradients steps in the inner looop
+            * use_first_order (bool): whether a first order approximation of higher-order gradients should be used (defaults to False)
+            * task_embedding_method (str): how to represent the task embedding that is used to condition the task-dependent 
+                probability distribution from which we sample weights for a given task (defaults to 'val_grad'). 'Val_grad' is the 
+                implicit method used in the platipus paper. 
+            * device (str): what device to use for training (either 'cpu' or 'gpu) - defaults to 'cpu'
+
         """
 
         super().__init__()
@@ -97,7 +120,31 @@ class Platipus(BaseLearner):
         Adapted from: 
         https://github.com/cnguyen10/few_shot_meta_learning/blob/2b075a5e5de4f81670ae8340e87acfc4d5e9bbc3/Platipus.py#L28
 
+        For a given batch of inputs and labels, we compute the loss of the functional model where the parameters of the 
+        model are overriden to be params. Note that this is the main reason that in __init__ we convert the base model
+        to a functional version of the model that can take in its parameters as an argument (as opposed to these 
+        parameters being stored in the model's state). 
+
+        The parameters are then updated using SGD with a given learning rate, and returned. 
+
         Params:
+            The following params comprise a normal batch of inputs and labels
+
+            * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
+            * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are not pad tokens
+            * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
+                the final classification layer 
+            * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
+
+            * params (iterable): Iterable of torch.nn.Paramater()s (the params that we want to evaluate our model at)
+            * task_classifier_weights (dict):  The final classification layer which is not meta-learned 
+                See _initialize_task_classifier_weights for a discription of the dict structure
+            * learning_rate (float): The internal learning rate used to update params
+            * optimize_classifier (bool): Whether to update the the final classification layer (this layer is not meta-learned)
+
+        Returns: 
+            * cloned_params (iterable): Iterable of torch.nn.Paramater()s that represent the updated the parameters 
+                after running SGD 
 
         """
 
@@ -159,7 +206,7 @@ class Platipus(BaseLearner):
         return cloned_params
 
     def optimizer_step(self, set_zero_grad=True):
-        """ Take a global update step of self.params """
+        """ Take a global update step of self.params; optionally set gradients back to 0"""
         self.optimizer.step()
         if set_zero_grad:
             self.optimizer.zero_grad()
@@ -283,7 +330,6 @@ class Platipus(BaseLearner):
         Returns: 
             * #TODO
         """
-        # TODO 
-        pass
+        raise NotImplementedError()
 
     
