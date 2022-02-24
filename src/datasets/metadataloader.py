@@ -1,10 +1,10 @@
 __author__ = 'Richard Diehl Martinez '
-'''Utilities for dataloading datasets'''
+''' Utilities for dataloading a MetaDataset '''
 
 import torch
 
 from torch.utils.data import DataLoader
-from .dataset import MASK_TOKEN_ID, CLS_TOKEN_ID
+from .metadataset import MASK_TOKEN_ID, CLS_TOKEN_ID
 
 def meta_collate(batch):
     """ 

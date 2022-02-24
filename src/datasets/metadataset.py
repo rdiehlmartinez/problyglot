@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-'''Utilities for preprocessing and loading dataset '''
+''' Utilities for preprocessing and loading dataset '''
 
 import os
 import torch 
@@ -33,7 +33,9 @@ BYTE_END_MARKER = tokenizer.vocab_size.to_bytes(BYTE_ENCODING_SIZE, BYTE_ENDIAN_
 
 class MetaDataset(IterableDataset):
     """
-    MetaDataset that coordinates the generation of tasks
+    MetaDataset that coordinates the generation of (masked language) tasks. For the 
+    foreseeable future MetaDataset only supports generation of masked language tasks,
+    but it can fairly trivially be adapted to also produce generation of NLU tasks. 
     """
 
     def __init__(self, config, meta_split):

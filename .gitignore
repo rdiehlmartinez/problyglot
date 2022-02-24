@@ -154,5 +154,6 @@ cython_debug/
 # Don't include datasets
 cc100/
 oscar/
+xtreme/
 *.xz
 *.pkl

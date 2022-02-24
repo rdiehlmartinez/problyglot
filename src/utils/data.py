@@ -1,7 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-'''
-Utility functions related to data processing functionality 
-'''
+''' Utility functions related to data processing functionality '''
 
 def move_to_device(batch, device):
     updated_batch = {}

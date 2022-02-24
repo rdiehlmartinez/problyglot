@@ -1,8 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-
-'''
-Entry point for launching problyglot.
-'''
+''' Entry point for launching problyglot. '''
 
 import logging
 import torch
@@ -11,13 +8,13 @@ import os
 
 from configparser import ConfigParser
 from src.utils import set_seed
-from src.dataset import MetaDataset
-from src.dataloader import MetaDataLoader
+from src.datasets import MetaDataset
+from src.datasets import MetaDataLoader
 from src.problyglot import Problyglot
 
-'''
+"""
 Base utils for setting up training and eval loops.
-'''
+"""
 
 def setup_config(config_file_path):
     '''Reads in a config file using ConfigParser'''

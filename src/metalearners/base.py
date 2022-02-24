@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-'''Base ABC Class for (meta) learners'''
+''' Base ABC Class for (meta) learners '''
 
 import abc 
 

@@ -1,5 +1,4 @@
 __author__ = 'Richard Diehl Martinez'
-
 """
 Implementation of the platipus model, proposed by Finn et el. https://arxiv.org/pdf/1806.02817.pdf
 
@@ -149,7 +148,6 @@ class Platipus(BaseLearner):
         """
 
         # copy the parameters but allow gradients to propagate back to original params
-        # TODO: check if this is equivalent to original implementation
         cloned_params = [torch.clone(p) for p in params]
 
         for _ in range(self.num_inner_steps): 

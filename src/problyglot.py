@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-'''Wrapper class for training and evaluating a model using meta learning '''
+''' Wrapper class for training and evaluating a model using a given meta learning technique '''
 
 import typing
 import logging 
@@ -17,7 +17,7 @@ class Problyglot(object):
     """
 
     def __init__(self, config) -> None:
-        ''' Initialize base model and meta learning method'''
+        """ Initialize base model and meta learning method """
 
         # config params need to be accessed by several methods
         self.config = config
@@ -34,7 +34,8 @@ class Problyglot(object):
         self.num_tasks_per_iteration = config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
 
     def load_model(self, base_model_name):
-        """Helper function for reading in base model - should be intialized with from_kwargs() class method """
+        """ Helper function for reading in base model - should be intialized with from_kwargs() class method """
+
         logger.info(f"Loading base model: {base_model_name}")
         model = None
         model_kwargs = dict(self.config.items("BASE_MODEL"))
@@ -52,7 +53,8 @@ class Problyglot(object):
         return model
 
     def load_learner(self, learner_method):
-        """Helper function for reading in (meta) learning procedure"""
+        """ Helper function for reading in (meta) learning procedure """
+
         logger.info(f"Using learner: {learner_method}")
         learner = None
         learner_kwargs = dict(self.config.items("LEARNER"))
@@ -71,27 +73,37 @@ class Problyglot(object):
         on data stored in train_dataloader
         """
 
-        num_task_batches = 0 # counter tracks number of batches of tasks seen by metalearner
+        logger.info("Beginning to train model")
+
+        # counter tracks number of batches of tasks seen by metalearner
+        num_task_batches = 0 
+
+        # counter tracks loss over an entire batch of tasks  
+        task_batch_loss = 0 
 
         for batch_idx, batch in enumerate(train_dataloader):
             task_name, support_batch, query_batch = batch
+            logger.debug(f"\t Training on task idx {batch_idx} - task: {task_name}")
 
             support_batch = move_to_device(support_batch, self.device)
             query_batch = move_to_device(query_batch, self.device)
 
-            print(f"got data for task: {task_name}")
-
-            task_batch_loss = 0. # training loss on the batch of tasks
-            for task_idx in range(self.num_tasks_per_iteration): 
-                print("running inner loop")
-                task_loss = self.learner.run_inner_loop(support_batch, query_batch)
-                task_loss = task_loss / self.num_tasks_per_iteration # normalizing loss 
-                task_loss.backward()
-                task_batch_loss += task_loss.detach().item()
-
-            num_task_batches += 1
-            self.learner.optimizer_step(set_zero_grad=True)
+            task_loss = self.learner.run_inner_loop(support_batch, query_batch)
             
+            task_loss = task_loss / self.num_tasks_per_iteration # normalizing loss 
+            task_loss.backward()
+            task_batch_loss += task_loss.detach().item()
+
+            if (batch_idx and (batch_idx + 1) % self.num_tasks_per_iteration == 0):
+                num_task_batches += 1
+
+                logger.info(f"No. batches of tasks processed: {num_task_batches} -- Task batch loss: {task_batch_loss}")
+
+                task_batch_loss = 0 
+                self.learner.optimizer_step(set_zero_grad=True)
+
+                exit()
+
 
             # TODO: Logging results 
             # TODO: Checkpointing 

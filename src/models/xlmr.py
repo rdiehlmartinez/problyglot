@@ -1,4 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
+""" XLM-r model implementation """
 
 import typing 
 import torch
