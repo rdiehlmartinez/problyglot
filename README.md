@@ -6,6 +6,9 @@ Feature Requests (marked with priority):
 * Implement other meta-learners (MAML) and the non-meta-learning baseline [3]
 
 Evaluation TODOs: 
-* Evaluation of model on downstream tasks [1] + allow sampling other NLU tasks in training [4]
+* Evaluation of model on downstream tasks [1] + allow sampling other NLU tasks in training [low priority]
     * create new specific dataset class for processing task specific dataset 
     * change wording of MetaDataset class to reflect that a task is not necessarily a language 
+
+
+* print out eval predictions and submit to xtreme

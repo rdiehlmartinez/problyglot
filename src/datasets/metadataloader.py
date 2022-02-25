@@ -4,7 +4,7 @@ __author__ = 'Richard Diehl Martinez '
 import torch
 
 from torch.utils.data import DataLoader
-from .metadataset import MASK_TOKEN_ID, CLS_TOKEN_ID
+from .metadataset import MASK_TOKEN_ID
 
 def meta_collate(batch):
     """ 
@@ -21,7 +21,7 @@ def meta_collate(batch):
                     to Q samples per token id occurs
 
     Returns: 
-        * task_name (str): task name (e.g. the language) of batch
+        * task_name (str): task name (i.e. the language) of batch
         * support_batch: a dictionary containing the following information for the support set
             * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
             * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
@@ -33,11 +33,10 @@ def meta_collate(batch):
     """
     task_name, (support_samples, query_samples) = batch[0] # only 1-task per batch 
 
-    # if the task is an nlu task we classify over the CLS token, otherwise over the MASK token
-    if 'nlu' in task_name:
-        target_tok_id = CLS_TOKEN_ID
-    else:
-        target_tok_id = MASK_TOKEN_ID
+    # since the task is MLM the target token we classify over is the MASK token
+    # if we ever wanted to classify NLU tasks then the target token would be the 
+    # the CLS token
+    target_tok_id = MASK_TOKEN_ID
 
     def process_batch(batch_samples):
         """ 

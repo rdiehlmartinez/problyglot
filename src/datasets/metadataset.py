@@ -24,7 +24,6 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR
 # We always use the XLM sentencepiece tokenizer
 tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
 MASK_TOKEN_ID = tokenizer.mask_token_id 
-CLS_TOKEN_ID = tokenizer.cls_token_id
 
 # to encode any token id we need BYTE_ENCODING_SIZE number of bytes (hex encoding)
 BYTE_ENCODING_SIZE = math.ceil(math.log(tokenizer.vocab_size + 1, 16)) 
@@ -38,12 +37,14 @@ class MetaDataset(IterableDataset):
     but it can fairly trivially be adapted to also produce generation of NLU tasks. 
     """
 
-    def __init__(self, config, meta_split):
+    def __init__(self, config):
         """ 
-        Initialize datasets for a given split using a config file 
+        Initialize MetaDataset using a config file. MetaDataset is the method 
+        used for training the meta learning model which is later applied to 
+        downstream NLU tasks. 
         """
-        self.meta_split = meta_split 
-        languages = self._get_languages(config, meta_split)
+
+        languages = self._get_languages(config)
         self.datasets, self.datasets_md = self._initialize_datasets(config, languages)
 
         self.task_sampling_method = config.get("META_DATASET", "task_sampling_method", fallback="random")
@@ -53,29 +54,20 @@ class MetaDataset(IterableDataset):
         super().__init__()
 
     @staticmethod
-    def _get_languages(config, meta_split): 
+    def _get_languages(config): 
         """
-        Helper for reading in languages from config or from a file that are associated with a 
-        given meta_split. 
-        
-        Returns:
-            * partition_languages [List(str)]: List of languages in iso-code format.
+        Helper for reading in languages from config or from a file.
         """    
-        partition_languages = None
-
-        # partition_languages_str can either be empty string, a file path or a 
+        # languages_str can either be empty string, a file path or a 
         # comma-separated list of iso language codes 
-        partition_languages_str = config.get("META_DATASET", f"{meta_split}_languages", fallback="")
-        if ".txt" in partition_languages_str: 
-            with open(partition_languages_str, "r") as f: 
-                partition_languages = f.read().splitlines()
-        elif partition_languages_str == "":
-            assert(partition != "train"), "config item for train_languages cannot be empty"
-            pass # return None
+        languages_str = config.get("META_DATASET", f"languages")
+        if ".txt" in languages_str: 
+            with open(languages_str, "r") as f: 
+                languages = f.read().splitlines()
         else: 
-            partition_languages = partition_languages_str.split(",")
+            languages = languages_str.split(",")
     
-        return partition_languages
+        return languages
 
     def _initialize_datasets(self, config, languages):
         """ 
@@ -99,7 +91,7 @@ class MetaDataset(IterableDataset):
                 size += os.stat(filepath).st_size
             return size
 
-        logger.info(f"Initializing datasets for (meta) split: {self.meta_split}")
+        logger.info(f"Initializing MetaDataset")
 
         data_root = config.get("META_DATASET", "root_path")
         datasets = {}
@@ -195,7 +187,7 @@ class IterableLanguageTaskDataset(object):
             * [optional] mask_sampling_method (str): either one of 'random' or 'proportional' which specify 
                 how to sample the N tasks
             * [optional] mask_sampling_prop_rate (float): used if mask_sampling_method is 'proportional', 
-                speifies the sampling proportional rate so that x~U(x)^{mask_sampling_prop_rate}
+                specifies the sampling proportional rate so that x~U(x)^{mask_sampling_prop_rate}
         """
         super().__init__()
         self.root_fp = root_fp 

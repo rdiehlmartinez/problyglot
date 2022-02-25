@@ -56,13 +56,13 @@ def setup(config_file_path):
 @click.argument('config_fp')
 def main(config_fp):
     config = setup(config_fp)
-    train_meta_dataset = MetaDataset(config, meta_split='train')
-    train_meta_dataloader = MetaDataLoader(train_meta_dataset)
+    meta_dataset = MetaDataset(config)
+    meta_dataloader = MetaDataLoader(meta_dataset)
+
     problyglot = Problyglot(config)
+    problyglot.train(meta_dataloader)
 
-    problyglot.train(train_meta_dataloader)
-
-    train_meta_dataset.shutdown()
+    meta_dataloader.shutdown()
 
 if __name__ == '__main__':
     main()
