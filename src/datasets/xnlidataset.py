@@ -140,7 +140,7 @@ class XNLIDataset(IterableDataset):
         input_ids = inputs['input_ids']
         label_id = XNLIDataset.LABEL_MAP[label]
 
-        return (input_ids, label_id)
+        return [input_ids, label_id]
 
     def __iter__(self): 
         """ IterableDataset expects __iter__ to be overriden"""
@@ -150,8 +150,14 @@ class XNLIDataset(IterableDataset):
                 processed_line = self.preprocess_line(line)
                 yield processed_line
 
+# def test_fn(batch):
+#     print(batch)
+#     exit()
+
 def main():
     from configparser import ConfigParser
+
+    from nludataloader import NLUDataLoader
 
     config = ConfigParser()
     config.add_section('XNLI_DATASET')
@@ -162,9 +168,11 @@ def main():
 
     for finetune_dataset, evaluation_dataset in dataset_generator:
 
-        for line in finetune_dataset: 
-            print(line)
-            break
+        finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=3) 
+
+        for batch in finetune_dataloader:
+            print(batch)
+            exit()
 
         exit()
         # for line in evaluation_dataset: 
