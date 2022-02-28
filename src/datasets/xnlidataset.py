@@ -9,6 +9,9 @@ from transformers import XLMRobertaTokenizer
 
 logger = logging.getLogger(__name__)
 
+# We always use the XLM sentencepiece tokenizer
+tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
+
 # to stop the huggingface tokenizer from giving the sequence longe than 512 warning 
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
 
@@ -98,6 +101,14 @@ class XNLIDatasetGenerator():
 
 class XNLIDataset(IterableDataset):
 
+    # default value for XNLI 
+    MAX_SEQ_LENGTH = 128
+
+    # xnli classes
+    LABEL_MAP = {"contradiction":0,
+                 "entailment":1,
+                 "neutral":2}
+
     """ Dataset for processing data for a specific language in the XNLI corpus """
 
     def __init__(self, lng, file_path): 
@@ -112,12 +123,32 @@ class XNLIDataset(IterableDataset):
     def language(self):
         return self._lng
 
+    @staticmethod
+    def preprocess_line(line):
+        # splitting information from tsv
+        split_line = line.split('\t')
+        text_a = split_line[0]
+        text_b = split_line[1]
+        label = split_line[2].strip()
+
+        # tokenizing inputs
+        inputs = tokenizer.encode_plus(text_a,
+                                       text_b,
+                                       add_special_tokens=True,
+                                       max_length=XNLIDataset.MAX_SEQ_LENGTH)
+        
+        input_ids = inputs['input_ids']
+        label_id = XNLIDataset.LABEL_MAP[label]
+
+        return (input_ids, label_id)
+
     def __iter__(self): 
         """ IterableDataset expects __iter__ to be overriden"""
         with open(self.file_path, 'r') as f:
             for line in f:
                 # tokenize line 
-                yield line
+                processed_line = self.preprocess_line(line)
+                yield processed_line
 
 def main():
     from configparser import ConfigParser
@@ -127,25 +158,18 @@ def main():
     config.set('XNLI_DATASET', 'root_path', '../../data/xtreme/download/xnli')
     config.set('XNLI_DATASET', 'use_few_shot_adaptation', 'False')
 
-    print("Testing functionality of XNLIDataset class")
-
-    print("Initializing dataset")
-
     dataset_generator = XNLIDatasetGenerator(config, evaluation_partition='dev')
 
     for finetune_dataset, evaluation_dataset in dataset_generator:
-
-        print(finetune_dataset.language)
-        print(evaluation_dataset.language)
 
         for line in finetune_dataset: 
             print(line)
             break
 
-                
-        for line in evaluation_dataset: 
-            print(line)
-            break
+        exit()
+        # for line in evaluation_dataset: 
+        #     print(line)
+        #     break
 
 
 
