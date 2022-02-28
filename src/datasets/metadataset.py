@@ -44,6 +44,8 @@ class MetaDataset(IterableDataset):
         downstream NLU tasks. 
         """
 
+        logger.info(f"Initializing MetaDataset")
+
         languages = self._get_languages(config)
         self.datasets, self.datasets_md = self._initialize_datasets(config, languages)
 
@@ -90,8 +92,6 @@ class MetaDataset(IterableDataset):
                 filepath = os.path.join(lng_root_fp, filename)
                 size += os.stat(filepath).st_size
             return size
-
-        logger.info(f"Initializing MetaDataset")
 
         data_root = config.get("META_DATASET", "root_path")
         datasets = {}

@@ -17,7 +17,7 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR
 
 class XNLIDatasetGenerator():
 
-    """ Dataset for the XNLI corpus (https://github.com/facebookresearch/XNLI) """
+    ''' A generator that yields XNLIDataset classes'''
 
     def __init__(self, config, evaluation_partition='dev'): 
         """
@@ -109,7 +109,10 @@ class XNLIDataset(IterableDataset):
                  "entailment":1,
                  "neutral":2}
 
-    """ Dataset for processing data for a specific language in the XNLI corpus """
+    """
+    Dataset for processing data for a specific language in the XNLI corpus. 
+    For batching, XNLIDataset expects to use an NLUDataLoader.
+    """
 
     def __init__(self, lng, file_path): 
         """

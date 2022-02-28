@@ -7,6 +7,7 @@ import logging
 from .models import XLMR
 from .metalearners import Platipus
 from .utils import device as DEFAULT_DEVICE, move_to_device
+from .datasets import MetaDataset, MetaDataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +20,30 @@ class Problyglot(object):
     def __init__(self, config) -> None:
         """ Initialize base model and meta learning method """
 
+        # setting up meta dataset for training if provided in config
+        if 'META_DATASET' in config:
+            self.meta_dataset = MetaDataset(config)
+            self.meta_dataloader = MetaDataLoader(self.meta_dataset)
+
         # config params need to be accessed by several methods
         self.config = config
 
+        # Setting device 
         self.device = config.get("PROBLYGLOT", "device", fallback=DEFAULT_DEVICE)
         logger.info(f"Running problyglot on device: {self.device}")
 
+        # setting base model 
         base_model_name = config.get("BASE_MODEL", "name")
         self.base_model = self.load_model(base_model_name)
         
+        # setting learner 
         learner_method = config.get("LEARNER", "method")
         self.learner = self.load_learner(learner_method)
 
+        # setting evaluator 
+
+
+        # setting problyglot specific configurations
         self.num_tasks_per_iteration = config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
 
     def load_model(self, base_model_name):
@@ -67,10 +80,10 @@ class Problyglot(object):
 
         return learner
 
-    def train(self, train_dataloader) -> None: 
+    def train(self) -> None: 
         """ 
         Train the self.base_model via the self.learner training procedure 
-        on data stored in train_dataloader
+        on data stored in self.meta_dataloader
         """
 
         logger.info("Beginning to train model")
@@ -81,7 +94,7 @@ class Problyglot(object):
         # counter tracks loss over an entire batch of tasks  
         task_batch_loss = 0 
 
-        for batch_idx, batch in enumerate(train_dataloader):
+        for batch_idx, batch in enumerate(self.meta_dataloader):
             task_name, support_batch, query_batch = batch
             logger.debug(f"\t Training on task idx {batch_idx} - task: {task_name}")
 
@@ -107,3 +120,7 @@ class Problyglot(object):
 
             # TODO: Logging results 
             # TODO: Checkpointing 
+
+        logger.info("Finished training model")
+        logger.info("Shutting down meta dataloader workers")
+        self.meta_dataloader.shutdown()
