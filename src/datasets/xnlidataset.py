@@ -19,7 +19,7 @@ class XNLIDatasetGenerator():
 
     ''' A generator that yields XNLIDataset classes'''
 
-    def __init__(self, config, evaluation_partition='dev'): 
+    def __init__(self, config): 
         """
         We assume that the data for the xnli task has been downloaded as part of the 
         XTREME cross-lingual benchmark (https://github.com/google-research/xtreme#download-the-data).
@@ -32,7 +32,7 @@ class XNLIDatasetGenerator():
         self.root_path = config.get("XNLI_DATASET", "root_path")
 
         # whether the evaluation is going to be done on dev or on test
-        self.evaluation_partition = evaluation_partition
+        self.evaluation_partition = config.get("EVALUATION", "partition", fallback="dev")
 
         # if use_few_shot_adaptation is False then we do zero-shot adaptation (from english -> other language)
         self.use_few_shot_adaptation = config.getboolean("XNLI_DATASET", "use_few_shot_adaptation", fallback=False)
@@ -152,10 +152,6 @@ class XNLIDataset(IterableDataset):
                 # tokenize line 
                 processed_line = self.preprocess_line(line)
                 yield processed_line
-
-# def test_fn(batch):
-#     print(batch)
-#     exit()
 
 def main():
     from configparser import ConfigParser

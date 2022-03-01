@@ -6,6 +6,7 @@ import logging
 
 from .models import XLMR
 from .metalearners import Platipus
+from .evaluation import Evaluator
 from .utils import device as DEFAULT_DEVICE, move_to_device
 from .datasets import MetaDataset, MetaDataLoader
 
@@ -41,7 +42,8 @@ class Problyglot(object):
         self.learner = self.load_learner(learner_method)
 
         # setting evaluator 
-
+        if 'EVALUATION' in config:
+            self.evaluator = Evaluator(config)
 
         # setting problyglot specific configurations
         self.num_tasks_per_iteration = config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
