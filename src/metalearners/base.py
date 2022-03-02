@@ -33,22 +33,3 @@ class BaseLearner(metaclass=abc.ABCMeta):
             * loss (torch.tensor): a tensor containing the loss that results from the inner loop 
         """
         raise NotImplementedError()
-
-    @abc.abstractmethod
-    def run_evaluation(self, support_batch, query_batch=None, *args, **learner_kwargs):
-        """ 
-        Run evaluation of the model which is assumed to be a property of this class.
-
-        Args: 
-            * support_batch: a dictionary containing the following information for the support set
-                * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
-                * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
-                    the final classification layer 
-                * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
-                * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are not pad tokens
-            * query_batch: same as support_batch, but for the data of the query set 
-        
-        Returns: 
-            * #TODO
-        """
-        raise NotImplementedError()

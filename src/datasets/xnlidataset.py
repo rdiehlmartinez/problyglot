@@ -163,11 +163,15 @@ def main():
     config.set('XNLI_DATASET', 'root_path', '../../data/xtreme/download/xnli')
     config.set('XNLI_DATASET', 'use_few_shot_adaptation', 'False')
 
-    dataset_generator = XNLIDatasetGenerator(config, evaluation_partition='dev')
+    dataset_generator = XNLIDatasetGenerator(config)
 
     for finetune_dataset, evaluation_dataset in dataset_generator:
 
         finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=3) 
+
+        print(next(iter(finetune_dataloader)))
+        
+        exit()
 
         for batch in finetune_dataloader:
             print(batch)

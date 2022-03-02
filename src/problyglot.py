@@ -44,9 +44,11 @@ class Problyglot(object):
         # setting evaluator 
         if 'EVALUATION' in config:
             self.evaluator = Evaluator(config)
-
+        
         # setting problyglot specific configurations
         self.num_tasks_per_iteration = config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
+        self.eval_every_n_iteration = config.getint("PROBLYGLOT", "eval_every_n_iteration", fallback=0)
+        
 
     def load_model(self, base_model_name):
         """ Helper function for reading in base model - should be intialized with from_kwargs() class method """
@@ -117,11 +119,15 @@ class Problyglot(object):
                 task_batch_loss = 0 
                 self.learner.optimizer_step(set_zero_grad=True)
 
-                exit()
+                # possibly run evaluation of the model
+                if (self.eval_every_n_iteration and num_task_batches % self.eval_every_n_iteration == 0):
+                    self.evaluator.run(self.learner)
+                    
 
+                # possibly save a checkpoint of the model 
+                # TODO
 
-            # TODO: Logging results 
-            # TODO: Checkpointing 
+                #exit()
 
         logger.info("Finished training model")
         logger.info("Shutting down meta dataloader workers")
