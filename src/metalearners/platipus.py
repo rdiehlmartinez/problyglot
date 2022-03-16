@@ -389,20 +389,19 @@ class Platipus(BaseLearner):
                     finetuned_theta[i] = adapted_mu_theta[i] + \
                         torch.randn_like(input=adapted_mu_theta[i], device=self.device) * torch.exp(input=self.log_sigma_theta[i])
             
-            # run SGD on the finetuned theta parameters
-            finetuned_theta = self.adapt_params_classification(**batch, 
-                                                               params=finetuned_theta,
-                                                               task_classifier_weights=task_classifier_weights,
-                                                               learning_rate=self.inner_lr,
-                                                               optimize_classifier=True,
-                                                               clone_params=False,
-                                                               evaluation_mode=True,
-                                                               override_num_inner_steps=1)
-            
-            logger.debug(f"Batch index: {batch_idx} - memory allocated: {torch.cuda.memory_allocated(device='cuda')}")
-            
+            else: 
+                # run SGD on the finetuned theta parameters
+                finetuned_theta = self.adapt_params_classification(**batch, 
+                                                                params=finetuned_theta,
+                                                                task_classifier_weights=task_classifier_weights,
+                                                                learning_rate=self.inner_lr,
+                                                                optimize_classifier=True,
+                                                                clone_params=False,
+                                                                evaluation_mode=True,
+                                                                override_num_inner_steps=1)
+
             if batch_idx == 2:
-                exit()
+                break
 
         finetuned_params = finetuned_theta
 
@@ -415,7 +414,25 @@ class Platipus(BaseLearner):
                                                                  **kwargs):
         """ 
         In most use-cases this method will be called after the run_finetuning_classification. 
-        # TODO: write out 
+        As the name suggests, this method runs inference on an NLU dataset for some classification
+        task (like NLI). The primary adaptation of the weights for a given task should 
+        occur in the run_finetuning_classification method. It is possible, however, to 
+        adapt the weights one more time on a given dataset, by passing in a batch of data 
+        (adaptation_batch). 
+
+        Args: 
+            * inference_dataloader (torch.data.Dataloader): The dataset for finetuning the model is passed
+                in as a dataloader (in most cases this will be an NLUDataloader)
+            * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
+            * task_classifier_weights (dict): weights of classifier layer; see 
+                _initialize_task_classifier_weights for explanation of dict values
+            * adaptation_batch: a dictionary containing the required data for running a forward 
+                pass of the model (see run_inner_loop for explanation of the dictionary)
+
+        Returns: 
+            * predictions ([int]): a dictionary storing the model's predictions for each 
+                datapoint passed in from the inference_dataloader as an int. 
+            * loss (int): the value of the classification loss on the inference dataset.
         """
 
         if finetuned_params is None: 
@@ -425,6 +442,8 @@ class Platipus(BaseLearner):
             task_classifier_weights = self._initialize_task_classifier_weights(kwargs['n_classes'])
 
         if adaptation_batch is not None:
+
+                # TODO: decompose
                 adaptation_batch = move_to_device(adaptation_batch, self.device)
                 # if adaptation_batch is passed in, we adapt the model's parameters to this data
                 adapted_mu_theta = self.adapt_params_classification(**adaptation_batch, 
@@ -440,29 +459,29 @@ class Platipus(BaseLearner):
             
         
         predictions = []
-        for batch in inference_dataloader: 
-            batch = move_to_device(batch, self.device)
-            # TODO: decompose 
-            outputs = self.functional_model.forward(input_ids=batch['input_ids'],
-                                                    attention_mask=batch['attention_mask'],
-                                                    params=finetuned_params)
 
-            # last_hidden_state has form (batch_size, sequence_length, hidden_size);
-            # where hidden_size = self.base_model_hidden_dim
-            last_hidden_state = outputs.last_hidden_state
+        # Running final inference script over the evaluation data
+        with torch.no_grad():
+            for batch in inference_dataloader: 
+                batch = move_to_device(batch, self.device)
+                # TODO: decompose 
+                outputs = self.functional_model.forward(input_ids=batch['input_ids'],
+                                                        attention_mask=batch['attention_mask'],
+                                                        params=finetuned_params)
 
-            # indexing into sequence layer of last_hidden state -> (batch_size, hidden_size) 
-            batch_size = last_hidden_state.size(0)
-            last_hidden_state = last_hidden_state[torch.arange(batch_size), batch['input_target_idx']]
+                # last_hidden_state has form (batch_size, sequence_length, hidden_size);
+                # where hidden_size = self.base_model_hidden_dim
+                last_hidden_state = outputs.last_hidden_state
 
-            # (batch_size, num_classes) 
-            logits = F.linear(last_hidden_state, **task_classifier_weights)
-            loss = self.ce_loss_function(input=logits, target=batch['label_ids'])
+                # indexing into sequence layer of last_hidden state -> (batch_size, hidden_size) 
+                batch_size = last_hidden_state.size(0)
+                last_hidden_state = last_hidden_state[torch.arange(batch_size), batch['input_target_idx']]
 
-            print(logits.shape)
-            exit()
-            #batch_predictions = 
+                # (batch_size, num_classes) 
+                logits = F.linear(last_hidden_state, **task_classifier_weights)
+                loss = self.ce_loss_function(input=logits, target=batch['label_ids'])
 
+                predictions.extend(torch.argmax(logits, dim=-1).tolist())
 
         return predictions
 

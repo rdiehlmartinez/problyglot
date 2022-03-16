@@ -89,7 +89,6 @@ class Problyglot(object):
         Train the self.base_model via the self.learner training procedure 
         on data stored in self.meta_dataloader
         """
-
         logger.info("Beginning to train model")
 
         # counter tracks number of batches of tasks seen by metalearner
@@ -105,23 +104,24 @@ class Problyglot(object):
             support_batch = move_to_device(support_batch, self.device)
             query_batch = move_to_device(query_batch, self.device)
 
-            task_loss = self.learner.run_inner_loop(support_batch, query_batch)
-            
+            task_loss = self.learner.run_inner_loop(support_batch, query_batch)            
             task_loss = task_loss / self.num_tasks_per_iteration # normalizing loss 
             task_loss.backward()
             task_batch_loss += task_loss.detach().item()
 
-            if (batch_idx and (batch_idx + 1) % self.num_tasks_per_iteration == 0):
+            if ((batch_idx + 1) % self.num_tasks_per_iteration == 0):
                 num_task_batches += 1
 
-                logger.info(f"No. batches of tasks processed: {num_task_batches} -- Task batch loss: {task_batch_loss}")
-
-                task_batch_loss = 0 
                 self.learner.optimizer_step(set_zero_grad=True)
+                logger.info(f"No. batches of tasks processed: {num_task_batches} -- Task batch loss: {task_batch_loss}")
+                task_batch_loss = 0 
 
                 # possibly run evaluation of the model
                 if (self.eval_every_n_iteration and num_task_batches % self.eval_every_n_iteration == 0):
+                    print("about to run evalor")
                     self.evaluator.run(self.learner)
+                    self.meta_dataset.shutdown()
+                    exit()
                     
 
                 # possibly save a checkpoint of the model 
@@ -131,4 +131,4 @@ class Problyglot(object):
 
         logger.info("Finished training model")
         logger.info("Shutting down meta dataloader workers")
-        self.meta_dataloader.shutdown()
+        self.meta_dataset.shutdown()
