@@ -65,6 +65,10 @@ class Platipus(BaseLearner):
         # getting functional form of the model
         self.functional_model = higher.patch.make_functional(module=base_model)
 
+        # NOTE: these lines are super important (otherwise computation graph explodes)
+        self.functional_model.track_higher_grads = False
+        self.functional_model._fast_params = [[]]
+
         # hidden dimensions of the outputs of the base_model
         self.base_model_hidden_dim = base_model.hidden_dim 
         
@@ -74,11 +78,11 @@ class Platipus(BaseLearner):
         self.log_v_q = []
         for param in base_model.parameters():
             self.mu_theta.append(param) # global mean parameters initialized as the weights of the base model
-            self.log_sigma_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device), requires_grad=param.requires_grad))
-            self.log_v_q.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device), requires_grad=param.requires_grad))
+            self.log_sigma_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device) - 4, requires_grad=param.requires_grad))
+            self.log_v_q.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device) - 4, requires_grad=param.requires_grad))
 
-        self.gamma_p = torch.nn.Parameter(data=torch.tensor(0.01).to(self.device))
-        self.gamma_q = torch.nn.Parameter(data=torch.tensor(0.01).to(self.device))
+        self.gamma_p = torch.nn.Parameter(data=torch.tensor(1e-2).to(self.device))
+        self.gamma_q = torch.nn.Parameter(data=torch.tensor(1e-2).to(self.device))
 
         self.all_meta_params = itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, [self.gamma_p, self.gamma_q])
 
@@ -86,6 +90,7 @@ class Platipus(BaseLearner):
         self.meta_lr = float(meta_lr)
         if optimizer_type == 'adam': 
             self.optimizer = torch.optim.Adam(params=self.all_meta_params, lr=self.meta_lr)
+            #self.optimizer.zero_grad()
         else: 
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
 
@@ -156,7 +161,6 @@ class Platipus(BaseLearner):
                 after running SGD 
 
         """
-
         if clone_params:
             # copy the parameters but allow gradients to propagate back to original params
             adapted_params = [torch.clone(p) for p in params]
@@ -168,13 +172,13 @@ class Platipus(BaseLearner):
         else: 
             num_inner_steps = self.num_inner_steps
 
-        for _ in range(num_inner_steps): 
+        for _ in range(num_inner_steps):
             outputs = self.functional_model.forward(input_ids=input_ids,
                                                     attention_mask=attention_mask,
                                                     params=adapted_params)
 
             # last_hidden_state has form (batch_size, sequence_length, hidden_size);
-            # where hidden_size = self.base_model_hidden_dim
+            # note: hidden_size is self.base_model_hidden_dim
             last_hidden_state = outputs.last_hidden_state
 
             # indexing into sequence layer of last_hidden state -> (batch_size, hidden_size) 
@@ -185,6 +189,7 @@ class Platipus(BaseLearner):
             logits = F.linear(last_hidden_state, **task_classifier_weights)
 
             loss = self.ce_loss_function(input=logits, target=label_ids)
+
             grad_params = [p for p in adapted_params if p.requires_grad]
 
             if self.use_first_order or evaluation_mode:
@@ -199,21 +204,20 @@ class Platipus(BaseLearner):
                     inputs=grad_params,
                     create_graph=True,
                 )
-            
+
             # updating params
             grad_counter = 0
-            for idx, p in enumerate(adapted_params):
+            for i, p in enumerate(adapted_params):
                 if p.requires_grad:
-                    adapted_params[idx] = adapted_params[idx] - learning_rate * grads[grad_counter]
+                    adapted_params[i] = adapted_params[i] - learning_rate * grads[grad_counter]
                     grad_counter += 1
 
             # optionally use SGD to update the weights of the final linear classification layer
             if optimize_classifier:
-              
+        
                 classifier_grads = torch.autograd.grad(
                     outputs=loss,
                     inputs=[task_classifier_weights["weight"], task_classifier_weights["bias"]],
-                    retain_graph=True if not evaluation_mode else False,
                 )
 
                 task_classifier_weights["weight"] = task_classifier_weights["weight"] - learning_rate * classifier_grads[0]
@@ -288,24 +292,29 @@ class Platipus(BaseLearner):
         task_classifier_weights = self._initialize_task_classifier_weights(n_classes)
 
         # TODO: implement task embedding 
-
+        
         # mu theta adapted to the query set
         mu_theta_query = self.adapt_params_classification(**query_batch, 
                                                             params=self.mu_theta,
                                                             task_classifier_weights=task_classifier_weights,
-                                                            learning_rate=self.gamma_q)
+                                                            learning_rate=self.gamma_q,
+                                                            clone_params=True) 
         
         # sampling from task specific distribution updated mu_theta 
         theta = [None] * len(self.mu_theta) 
         for i in range(len(theta)):
-            theta[i] = mu_theta_query[i] + \
-                torch.randn_like(input=mu_theta_query[i], device=self.device) * torch.exp(input=self.log_v_q[i])
+            if mu_theta_query[i].requires_grad: 
+                theta[i] = mu_theta_query[i] + \
+                    torch.randn_like(input=mu_theta_query[i], device=self.device) * torch.exp(input=self.log_v_q[i])
+            else: 
+                theta[i] = self.mu_theta[i]
 
         # adapting to the support set 
         phi = self.adapt_params_classification(**support_batch, 
-                                                 params=theta,
+                                                 params=theta, 
                                                  task_classifier_weights=task_classifier_weights,
                                                  learning_rate=self.inner_lr,
+                                                 clone_params=False,
                                                  optimize_classifier=True)
 
         # computing CE loss on the query set with updated phi params
@@ -326,11 +335,13 @@ class Platipus(BaseLearner):
         mu_theta_support = self.adapt_params_classification(**support_batch, 
                                                               params=self.mu_theta,
                                                               task_classifier_weights=task_classifier_weights,
-                                                              learning_rate=self.gamma_p)
+                                                              learning_rate=self.gamma_p,
+                                                              clone_params=True)
 
         kl_loss = kl_divergence_gaussians(p=[*mu_theta_query, *self.log_v_q], q=[*mu_theta_support, *self.log_sigma_theta])
 
         loss = ce_loss + self.kl_weight * kl_loss
+
         return loss
 
 
@@ -366,7 +377,7 @@ class Platipus(BaseLearner):
             batch = move_to_device(batch, self.device)
 
             if batch_idx == 0:
-                # use the first batch of the finetuning dataset to adapt the parameters 
+                # use the first batch of the finetuning dataset to adapt the parameters
                 adapted_mu_theta = self.adapt_params_classification(**batch, 
                                                                     params=self.mu_theta,
                                                                     task_classifier_weights=task_classifier_weights,
@@ -378,8 +389,6 @@ class Platipus(BaseLearner):
                     finetuned_theta[i] = adapted_mu_theta[i] + \
                         torch.randn_like(input=adapted_mu_theta[i], device=self.device) * torch.exp(input=self.log_sigma_theta[i])
             
-            logger.debug(f"Batch index: {batch_idx} - memory allocated: {torch.cuda.memory_allocated(device='cuda')}")
-
             # run SGD on the finetuned theta parameters
             finetuned_theta = self.adapt_params_classification(**batch, 
                                                                params=finetuned_theta,
@@ -389,8 +398,12 @@ class Platipus(BaseLearner):
                                                                clone_params=False,
                                                                evaluation_mode=True,
                                                                override_num_inner_steps=1)
+            
             logger.debug(f"Batch index: {batch_idx} - memory allocated: {torch.cuda.memory_allocated(device='cuda')}")
             
+            if batch_idx == 2:
+                exit()
+
         finetuned_params = finetuned_theta
 
         return (finetuned_params, task_classifier_weights)
