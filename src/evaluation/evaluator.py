@@ -47,7 +47,13 @@ class Evaluator(object):
 
             dataset_generator = self.dataset_generators[eval_task]
 
-            for finetune_dataset, evaluation_dataset in dataset_generator:
+            if eval_task_type == "classification": 
+                finetune_method = learner.run_finetuning_classification
+                inference_method = learner.run_inference_classification
+            else: 
+                raise Exception(f"Invalid task type: {eval_task_type} for task: {eval_task}")
+
+            for subtask_idx, (finetune_dataset, evaluation_dataset) in enumerate(dataset_generator):
                 finetune_language = finetune_dataset.language
                 evaluation_language = evaluation_dataset.language
                 logger.info(f"\t Finetuning on language: {finetune_language} - evaluating on language: {evaluation_language}")
@@ -55,21 +61,18 @@ class Evaluator(object):
                 finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=self.batch_size)
                 evaluation_dataloader = NLUDataLoader(evaluation_dataset, batch_size=self.batch_size)
 
-                if eval_task_type == "classification": 
-                    # TODO: use config to run different inference experiments 
-                    # TODO: allow the finetuning to just be run once (if multiple models adapted on same initial one)
-                    inference_params = learner.run_finetuning_classification(finetune_dataloader, **eval_task_params)
-                    predictions, eval_loss = learner.run_inference_classification(evaluation_dataloader, 
-                                                                                  **inference_params,
-                                                                                  adaptation_batch=None)
-                    print(eval_loss)
-                    exit()
-                else: 
-                    raise Exception(f"Invalid task type: {eval_task_type} for task: {eval_task}")
+                if not dataset_generator.use_few_shot_adaptation:
+                    # we are doing zero-shot adaptation so the initial finetuning is always the same
+                    if subtask_idx == 0:
+                        inference_params = finetune_method(finetune_dataloader, **eval_task_params)
+                else:
+                    inference_params = finetune_method(finetune_dataloader, **eval_task_params)
+
+                predictions, eval_loss = inference_method(evaluation_dataloader, **inference_params, adaptation_batch=None)
 
                 #  compute metrics with predictions
                 metrics = 0.0
-                logger.info(f"\t \t Metrics: {metrics}")
+                logger.info(f"\t \t Metrics: {metrics} - Eval Loss: {eval_loss}")
             
             eval_task_metrics = 0.0
             logger.info(f"\t (Task {idx}) Metrics: {eval_task_metrics}")
