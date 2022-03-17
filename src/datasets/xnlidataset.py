@@ -38,8 +38,9 @@ class XNLIDatasetGenerator():
         self.use_few_shot_adaptation = config.getboolean("XNLI_DATASET", "use_few_shot_adaptation", fallback=False)
 
         if self.use_few_shot_adaptation:
-            # TODO
-            raise NotImplementedError()
+            self.translated_root_path = os.path.join(self.root_path, "translate-train")
+            assert(os.path.exists(self.translated_root_path)),\
+                "For few shot adaptation must have a translate-train directory"
 
         # if adapt_on_eval is set to True then we adapt on the evaluation set in addition to also adapting 
         # on the finetuning set 
@@ -61,11 +62,11 @@ class XNLIDatasetGenerator():
         language_files = []
         file_paths = os.listdir(root_path)
 
-        if not self.use_few_shot_adaptation:
-            # if we are doing zero-shot adaptation, then we always finetune on english data
-            eng_lng_str = 'en'
-            eng_file_path = os.path.join(root_path, 'train-en.tsv')
-        
+        eng_lng_str = 'en'
+        eng_file_path = os.path.join(root_path, 'train-en.tsv')
+
+        if self.use_few_shot_adaptation:
+            translated_file_paths = os.listdir(self.translated_root_path)
 
         for file_path in file_paths: 
             file_path_split = file_path.split('-')
@@ -77,10 +78,14 @@ class XNLIDatasetGenerator():
 
             language_file_dict = dict()
 
-            if self.use_few_shot_adaptation:
-                # TODO
-                raise NotImplementedError()
+            if self.use_few_shot_adaptation and file_path_lng != "en":
+                # looking up the translated version of the current evaluation file
+                # except when the eval language is already english 
+                translated_file_path = list(filter(lambda x: file_path_lng in x, translated_file_paths))[0]
+                translated_full_file_path = os.path.join(self.translated_root_path, translated_file_path)
+                language_file_dict['finetune'] = (file_path_lng, translated_full_file_path)
             else: 
+                # if we are doing zero-shot adaptation, then we always finetune on english data
                 language_file_dict['finetune'] = (eng_lng_str, eng_file_path)
             
             full_file_path = os.path.join(root_path, file_path)
@@ -97,7 +102,7 @@ class XNLIDatasetGenerator():
         """
 
         for language_file_dict in self.language_files:
-            finetune_dataset = XNLIDataset(*language_file_dict['finetune'])
+            finetune_dataset = XNLIDataset(*language_file_dict['finetune'], translated=self.use_few_shot_adaptation)
             evaluation_dataset = XNLIDataset(*language_file_dict['evaluation'])
 
             yield (finetune_dataset, evaluation_dataset)
@@ -118,25 +123,34 @@ class XNLIDataset(IterableDataset):
     For batching, XNLIDataset expects to use an NLUDataLoader.
     """
 
-    def __init__(self, lng, file_path): 
+    def __init__(self, lng, file_path, translated=False): 
         """
         For a given language string and data filepath, creates a Dataset that 
-        iterates over and preprocesses the XNLI data for that language 
+        iterates over and preprocesses the XNLI data for that language. 
+        The keyword arg, translated, indicates whether the data has been 
+        translated in which case the data preprocessing differs slightly.  
         """
         self._lng = lng
         self.file_path = file_path
+
+        self.translated = translated
 
     @property
     def language(self):
         return self._lng
 
-    @staticmethod
-    def preprocess_line(line):
+    def preprocess_line(self, line):
         # splitting information from tsv
         split_line = line.split('\t')
-        text_a = split_line[0]
-        text_b = split_line[1]
-        label = split_line[2].strip()
+
+        if self.translated:
+            text_a = split_line[2]
+            text_b = split_line[3]
+            label = split_line[4].strip()
+        else:
+            text_a = split_line[0]
+            text_b = split_line[1]
+            label = split_line[2].strip()
 
         # tokenizing inputs
         inputs = tokenizer.encode_plus(text_a,
@@ -158,6 +172,7 @@ class XNLIDataset(IterableDataset):
                 yield processed_line
 
 def main():
+    """ Basic testing of XNLI Dataset"""
     from configparser import ConfigParser
 
     from nludataloader import NLUDataLoader
@@ -165,27 +180,18 @@ def main():
     config = ConfigParser()
     config.add_section('XNLI_DATASET')
     config.set('XNLI_DATASET', 'root_path', '../../data/xtreme/download/xnli')
-    config.set('XNLI_DATASET', 'use_few_shot_adaptation', 'False')
+    config.set('XNLI_DATASET', 'use_few_shot_adaptation', 'True')
 
     dataset_generator = XNLIDatasetGenerator(config)
 
     for finetune_dataset, evaluation_dataset in dataset_generator:
 
         finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=3) 
+        evaluation_dataloader = NLUDataLoader(evaluation_dataset, batch_size=3)
 
         print(next(iter(finetune_dataloader)))
-        
-        exit()
-
-        for batch in finetune_dataloader:
-            print(batch)
-            exit()
-
-        exit()
-        # for line in evaluation_dataset: 
-        #     print(line)
-        #     break
-
+        print(next(iter(evaluation_dataloader)))
+        break
 
 
 if __name__ == '__main__':
