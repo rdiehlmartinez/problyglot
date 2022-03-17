@@ -403,8 +403,6 @@ class Platipus(BaseLearner):
                 * task_classifier_weights (dict): weights of classifier layer; see 
                     _initialize_task_classifier_weights for explanation of dict values
         """
-
-        print("running finetuning classification")
         task_classifier_weights = self._initialize_task_classifier_weights(n_classes)
 
         finetuned_theta = None

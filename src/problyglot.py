@@ -118,16 +118,13 @@ class Problyglot(object):
 
                 # possibly run evaluation of the model
                 if (self.eval_every_n_iteration and num_task_batches % self.eval_every_n_iteration == 0):
-                    print("about to run evalor")
                     self.evaluator.run(self.learner)
                     self.meta_dataset.shutdown()
-                    exit()
-                    
+                    exit()                    
 
                 # possibly save a checkpoint of the model 
                 # TODO
 
-                #exit()
 
         logger.info("Finished training model")
         logger.info("Shutting down meta dataloader workers")
