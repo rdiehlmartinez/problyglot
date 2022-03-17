@@ -62,7 +62,7 @@ class Platipus(BaseLearner):
 
         self.device = device
 
-        # getting functional form of the model
+        # getting functional form of the model 
         self.functional_model = higher.patch.make_functional(module=base_model)
 
         # NOTE: these lines are super important (otherwise computation graph explodes)
@@ -90,7 +90,6 @@ class Platipus(BaseLearner):
         self.meta_lr = float(meta_lr)
         if optimizer_type == 'adam': 
             self.optimizer = torch.optim.Adam(params=self.all_meta_params, lr=self.meta_lr)
-            #self.optimizer.zero_grad()
         else: 
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
 
@@ -113,18 +112,126 @@ class Platipus(BaseLearner):
         self.use_first_order = use_first_order
 
         self.task_embedding_method = task_embedding_method
+
+
+    def _run_forward_pass(self, data_batch, params, task_classifier_weights):
+        """ 
+        Helper method for running a batch of data through a forward pass of the functional model 
+
+        Args: 
+            * data_batch (dict): Batch of data for a forward pass through the model 
+                (see run_inner_loop for information on the data structure)
+            * params ([torch.Tensor]): List of tensor weights storing the model weights 
+            * task_classifier_weights (dict): weights of classifier layer; see 
+                _initialize_task_classifier_weights for explanation of dict values
+
+        Returns:
+            * logits ([torch.Tensor]): Logits resulting from forawrd pass 
+            * loss (int): Loss of data 
+        """
+
+        outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
+                                                attention_mask=data_batch['attention_mask'],
+                                                params=params)
+
+        # last_hidden_state has form (batch_size, sequence_length, hidden_size);
+        # where hidden_size = self.base_model_hidden_dim
+        last_hidden_state = outputs.last_hidden_state
+
+        # indexing into sequence layer of last_hidden state -> (batch_size, hidden_size) 
+        batch_size = last_hidden_state.size(0)
+        last_hidden_state = last_hidden_state[torch.arange(batch_size), data_batch['input_target_idx']]
+
+        # (batch_size, num_classes) 
+        logits = F.linear(last_hidden_state, **task_classifier_weights)
+        loss = self.ce_loss_function(input=logits, target=data_batch['label_ids'])
+
+        return (logits, loss)
+
+
+    def _initialize_task_classifier_weights(self, n_classes, method='xavier_normal'):
+        """ 
+        Helper method for initializing the weight and bias layer of the final classification layer
+        to classify n_classes number of classes for the current task.
+
+        Args: 
+            * n_classes (int): Number of classes 
+            * method (str): Method for weight initialization
+        Returns: 
+            * task_classifier_weights (dict): {
+                * weight -> (torch.Tensor): classification weight matrix
+                * bias -> (torch.Tensor): classification bias vector
+                }
+        """
+
+        # TODO allow task classifier to be initialized with some 'smart weights' (protoMAML style)
+
+        if method == 'xavier_normal':
+            # Xavier normal weight implementation
+            std_weight = math.sqrt(2.0 / float(self.base_model_hidden_dim + n_classes))
+            std_bias = math.sqrt(2.0 / float(n_classes))
+
+            # weights need to be shape (out_features, in_features) to be compatible with functional linear
+            classifier_weight = torch.randn((n_classes, self.base_model_hidden_dim), device=self.device) * std_weight
+            classifier_bias = torch.randn((n_classes), device=self.device) * std_bias
+        else:
+            raise NotImplementedError(f"Task classification weight initialization method: {method} not supported")
+
+        classifier_weight.requires_grad = True
+        classifier_bias.requires_grad = True
+
+        task_classifier_weights = { 
+            "weight": classifier_weight,
+            "bias": classifier_bias
+        }
+
+        return task_classifier_weights
         
     ###### Model adaptation methods ######
-    
+
+    def sample_adapted_weights(self, data_batch, sampling_std, return_adapted_mean=False, **adaptation_kwargs): 
+        """ 
+        Helper method for sampling model weights that have been adapted to a batch of 
+        data. 
+
+        Args: 
+            * data_batch (dict): Batch of data for a forward pass through the model 
+                (see run_inner_loop for information on the data structure)
+            * sampling_std ([torch.Tensor]): The standard deviation to be used for sampling weights
+                for each weight that is to-be meta-learned
+            * return_adapted_mean (bool): Whether to also return the means from the adapted distribution 
+                over weights (defaults to False)
+            * adaptation_kwargs: Kerword arguments to be passed into adapt_params_classification 
+                (see this method for more information) 
+        Returns: 
+            * adapted_params ([torch.Tensor]): Adapted means of the weight distribution (only returned 
+                if return_adapted_mean is set to True)
+            * sampled_weights ([torch.Tensor]): The generated list of tensor weights sampled 
+                from the model 
+        """
+
+        adapted_params = self.adapt_params_classification(data_batch, **adaptation_kwargs)
+
+        sampled_weights = [None] * len(adapted_params) 
+
+        for i in range(len(sampled_weights)):
+            if adapted_params[i].requires_grad: 
+                sampled_weights[i] = adapted_params[i] + \
+                    torch.randn_like(input=adapted_params[i], device=self.device) * torch.exp(input=sampling_std[i])
+            else: 
+                sampled_weights[i] = self.mu_theta[i]
+
+        if return_adapted_mean:
+            return (adapted_params, sampled_weights)
+        else: 
+            return sampled_weights  
+
     # for adapting to classificationt tasks (e.g. the meta-training task is a classification task)
-    def adapt_params_classification(self, input_ids, input_target_idx, attention_mask, label_ids,
-                                    params,
-                                    task_classifier_weights,
-                                    learning_rate, 
-                                    optimize_classifier=False,
-                                    clone_params=True,
-                                    evaluation_mode=False,
-                                    override_num_inner_steps=0):
+    def adapt_params_classification(self, data_batch, params, task_classifier_weights, learning_rate, 
+                                                                                       optimize_classifier=False,
+                                                                                       clone_params=True,
+                                                                                       evaluation_mode=False,
+                                                                                       override_num_inner_steps=0):
         """ 
         Adapted from: 
         https://github.com/cnguyen10/few_shot_meta_learning/blob/2b075a5e5de4f81670ae8340e87acfc4d5e9bbc3/Platipus.py#L28
@@ -137,15 +244,8 @@ class Platipus(BaseLearner):
         The parameters are then updated using SGD with a given learning rate, and returned. 
 
         Params:
-            The following first params comprise a batch of inputs and labels yielded from a dataloader
-
-            * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
-            * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are not pad tokens
-            * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
-                the final classification layer 
-            * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
-
-
+            * data_batch (dict): Batch of data for a forward pass through the model 
+                (see run_inner_loop for information on the data structure)
             * params (iterable): Iterable of torch.nn.Paramater()s (the params that we want to evaluate our model at)
             * task_classifier_weights (dict):  The final classification layer which is not meta-learned 
                 See _initialize_task_classifier_weights for a discription of the dict structure
@@ -159,8 +259,8 @@ class Platipus(BaseLearner):
         Returns: 
             * adapted_params (iterable): Iterable of torch.nn.Paramater()s that represent the updated the parameters 
                 after running SGD 
-
         """
+
         if clone_params:
             # copy the parameters but allow gradients to propagate back to original params
             adapted_params = [torch.clone(p) for p in params]
@@ -173,22 +273,9 @@ class Platipus(BaseLearner):
             num_inner_steps = self.num_inner_steps
 
         for _ in range(num_inner_steps):
-            outputs = self.functional_model.forward(input_ids=input_ids,
-                                                    attention_mask=attention_mask,
-                                                    params=adapted_params)
 
-            # last_hidden_state has form (batch_size, sequence_length, hidden_size);
-            # note: hidden_size is self.base_model_hidden_dim
-            last_hidden_state = outputs.last_hidden_state
-
-            # indexing into sequence layer of last_hidden state -> (batch_size, hidden_size) 
-            batch_size = last_hidden_state.size(0)
-            last_hidden_state = last_hidden_state[torch.arange(batch_size), input_target_idx]
-
-            # (batch_size, num_classes) 
-            logits = F.linear(last_hidden_state, **task_classifier_weights)
-
-            loss = self.ce_loss_function(input=logits, target=label_ids)
+            logits, loss = self._run_forward_pass(data_batch, params=adapted_params, 
+                                                              task_classifier_weights=task_classifier_weights)
 
             grad_params = [p for p in adapted_params if p.requires_grad]
 
@@ -225,49 +312,14 @@ class Platipus(BaseLearner):
 
         return adapted_params
 
+
+    ###### Model training methods ######
+
     def optimizer_step(self, set_zero_grad=True):
         """ Take a global update step of self.params; optionally set gradients back to 0"""
         self.optimizer.step()
         if set_zero_grad:
             self.optimizer.zero_grad()
-    
-    def _initialize_task_classifier_weights(self, n_classes, method='xavier_normal'):
-        """ 
-        Initialize the weight and bias layer of the final classification layer to classify 
-        n_classes number of classes for the current task.
-
-        Args: 
-            * n_classes (int): Number of classes 
-            * method (str): Method for weight initialization
-        Returns: 
-            * task_classifier_weights (dict): {
-                * weight -> (torch.Tensor): classification weight matrix
-                * bias -> (torch.Tensor): classification bias vector
-                }
-        """
-
-        # TODO allow task classifier to be initialized with some 'smart weights' (protoMAML style)
-
-        if method == 'xavier_normal':
-            # Xavier normal weight implementation
-            std_weight = math.sqrt(2.0/ float(self.base_model_hidden_dim + n_classes))
-            std_bias = math.sqrt(2.0 / float(n_classes))
-
-            # weights need to be shape (out_features, in_features) to be compatible with functional linear
-            classifier_weight = torch.randn((n_classes, self.base_model_hidden_dim), device=self.device) * std_weight
-            classifier_bias = torch.randn((n_classes), device=self.device) * std_bias
-        else:
-            raise NotImplementedError(f"Task classification weight initialization method: {method} not supported")
-
-        classifier_weight.requires_grad = True
-        classifier_bias.requires_grad = True
-
-        task_classifier_weights = { 
-            "weight": classifier_weight,
-            "bias": classifier_bias
-        }
-
-        return task_classifier_weights
 
     def run_inner_loop(self, support_batch, query_batch, *args, **kwargs): 
         """
@@ -293,50 +345,33 @@ class Platipus(BaseLearner):
 
         # TODO: implement task embedding 
         
-        # mu theta adapted to the query set
-        mu_theta_query = self.adapt_params_classification(**query_batch, 
-                                                            params=self.mu_theta,
-                                                            task_classifier_weights=task_classifier_weights,
-                                                            learning_rate=self.gamma_q,
-                                                            clone_params=True) 
-        
-        # sampling from task specific distribution updated mu_theta 
-        theta = [None] * len(self.mu_theta) 
-        for i in range(len(theta)):
-            if mu_theta_query[i].requires_grad: 
-                theta[i] = mu_theta_query[i] + \
-                    torch.randn_like(input=mu_theta_query[i], device=self.device) * torch.exp(input=self.log_v_q[i])
-            else: 
-                theta[i] = self.mu_theta[i]
+        # sampling theta after adapting model to query_batch
+        mu_theta_query, theta = self.sample_adapted_weights(query_batch, sampling_std=self.log_v_q,
+                                                                         return_adapted_mean=True,
+                                                                         params=self.mu_theta,
+                                                                         task_classifier_weights=task_classifier_weights,
+                                                                         learning_rate=self.gamma_q,
+                                                                         clone_params=True)
 
-        # adapting to the support set 
-        phi = self.adapt_params_classification(**support_batch, 
-                                                 params=theta, 
-                                                 task_classifier_weights=task_classifier_weights,
-                                                 learning_rate=self.inner_lr,
-                                                 clone_params=False,
-                                                 optimize_classifier=True)
+        # adapting theta to the support set -> adapted params are phi
+        phi = self.adapt_params_classification(support_batch, 
+                                               params=theta, 
+                                               task_classifier_weights=task_classifier_weights,
+                                               learning_rate=self.inner_lr,
+                                               clone_params=False,
+                                               optimize_classifier=True)
 
-        # computing CE loss on the query set with updated phi params
-        outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
-                                                attention_mask=query_batch['attention_mask'],
-                                                params=phi)
-
-        last_hidden_state = outputs.last_hidden_state
-        batch_size = last_hidden_state.size(0)
-        last_hidden_state = last_hidden_state[torch.arange(batch_size), query_batch['input_target_idx']]
-        logits = F.linear(last_hidden_state, **task_classifier_weights)
-
-        ce_loss = self.ce_loss_function(input=logits, target=query_batch['label_ids'])
+        # evaluating on the query batch using the adapted params phi  
+        logits, ce_loss = self._run_forward_pass(query_batch, params=phi, task_classifier_weights=task_classifier_weights)
 
         # computing KL loss (requires adapting mu_theta to the support set)
         
         # mu theta adapted to the support set (line 10 from algorithm 1) 
-        mu_theta_support = self.adapt_params_classification(**support_batch, 
-                                                              params=self.mu_theta,
-                                                              task_classifier_weights=task_classifier_weights,
-                                                              learning_rate=self.gamma_p,
-                                                              clone_params=True)
+        mu_theta_support = self.adapt_params_classification(support_batch, 
+                                                            params=self.mu_theta,
+                                                            task_classifier_weights=task_classifier_weights,
+                                                            learning_rate=self.gamma_p,
+                                                            clone_params=True)
 
         kl_loss = kl_divergence_gaussians(p=[*mu_theta_query, *self.log_v_q], q=[*mu_theta_support, *self.log_sigma_theta])
 
@@ -373,33 +408,29 @@ class Platipus(BaseLearner):
 
         finetuned_theta = None
     
-        for batch_idx, batch in enumerate(finetune_dataloader):
-            batch = move_to_device(batch, self.device)
+        for batch_idx, data_batch in enumerate(finetune_dataloader):
+            data_batch = move_to_device(data_batch, self.device)
 
             if batch_idx == 0:
-                # use the first batch of the finetuning dataset to adapt the parameters
-                adapted_mu_theta = self.adapt_params_classification(**batch, 
-                                                                    params=self.mu_theta,
-                                                                    task_classifier_weights=task_classifier_weights,
-                                                                    learning_rate=self.gamma_p,
-                                                                    evaluation_mode=True)
-
-                finetuned_theta = [None] * len(self.mu_theta) 
-                for i in range(len(adapted_mu_theta)):
-                    finetuned_theta[i] = adapted_mu_theta[i] + \
-                        torch.randn_like(input=adapted_mu_theta[i], device=self.device) * torch.exp(input=self.log_sigma_theta[i])
+                # use the first batch of the finetuning dataset to sample weights 
+                finetuned_theta = self.sample_adapted_weights(data_batch, sampling_std=self.log_sigma_theta,
+                                                                          params=self.mu_theta,
+                                                                          task_classifier_weights=task_classifier_weights,
+                                                                          learning_rate=self.gamma_p,
+                                                                          clone_params=True,
+                                                                          evaluation_mode=True)
             
-            else: 
-                # run SGD on the finetuned theta parameters
-                finetuned_theta = self.adapt_params_classification(**batch, 
-                                                                params=finetuned_theta,
-                                                                task_classifier_weights=task_classifier_weights,
-                                                                learning_rate=self.inner_lr,
-                                                                optimize_classifier=True,
-                                                                clone_params=False,
-                                                                evaluation_mode=True,
-                                                                override_num_inner_steps=1)
+            # run SGD on the finetuned theta parameters
+            finetuned_theta = self.adapt_params_classification(data_batch, 
+                                                               params=finetuned_theta,
+                                                               task_classifier_weights=task_classifier_weights,
+                                                               learning_rate=self.inner_lr,
+                                                               optimize_classifier=True,
+                                                               clone_params=False,
+                                                               evaluation_mode=True,
+                                                               override_num_inner_steps=1)
 
+            # TODO: remove me 
             if batch_idx == 2:
                 break
 
@@ -442,47 +473,36 @@ class Platipus(BaseLearner):
             task_classifier_weights = self._initialize_task_classifier_weights(kwargs['n_classes'])
 
         if adaptation_batch is not None:
-
-                # TODO: decompose
-                adaptation_batch = move_to_device(adaptation_batch, self.device)
                 # if adaptation_batch is passed in, we adapt the model's parameters to this data
-                adapted_mu_theta = self.adapt_params_classification(**adaptation_batch, 
-                                                                    params=finetuned_params,
-                                                                    task_classifier_weights=task_classifier_weights,
-                                                                    learning_rate=self.gamma_p,
-                                                                    evaluation_mode=True)
+                adaptation_batch = move_to_device(adaptation_batch, self.device)
 
-                finetuned_params = [None] * len(self.mu_theta) 
-                for i in range(len(adapted_mu_theta)):
-                    finetuned_params[i] = adapted_mu_theta[i] + \
-                        torch.randn_like(input=adapted_mu_theta[i], device=self.device) * torch.exp(input=self.log_sigma_theta[i])
-            
+                finetuned_params = self.sample_adapted_weights(adaptation_batch, sampling_std=self.log_sigma_theta,
+                                                                                 params=finetuned_params,
+                                                                                 task_classifier_weights=task_classifier_weights,
+                                                                                 learning_rate=self.gamma_p,
+                                                                                 clone_params=True,
+                                                                                 evaluation_mode=True)
         
         predictions = []
+        total_loss = 0.0
+        total_samples = 0
 
         # Running final inference script over the evaluation data
         with torch.no_grad():
-            for batch in inference_dataloader: 
-                batch = move_to_device(batch, self.device)
-                # TODO: decompose 
-                outputs = self.functional_model.forward(input_ids=batch['input_ids'],
-                                                        attention_mask=batch['attention_mask'],
-                                                        params=finetuned_params)
+            for data_batch in inference_dataloader: 
+                data_batch = move_to_device(data_batch, self.device)
 
-                # last_hidden_state has form (batch_size, sequence_length, hidden_size);
-                # where hidden_size = self.base_model_hidden_dim
-                last_hidden_state = outputs.last_hidden_state
-
-                # indexing into sequence layer of last_hidden state -> (batch_size, hidden_size) 
-                batch_size = last_hidden_state.size(0)
-                last_hidden_state = last_hidden_state[torch.arange(batch_size), batch['input_target_idx']]
-
-                # (batch_size, num_classes) 
-                logits = F.linear(last_hidden_state, **task_classifier_weights)
-                loss = self.ce_loss_function(input=logits, target=batch['label_ids'])
+                logits, loss = self._run_forward_pass(data_batch, params=finetuned_params, 
+                                                                  task_classifier_weights=task_classifier_weights)
 
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
 
-        return predictions
+                batch_size = logits.size(0)
+                total_loss += loss.item() * batch_size # loss is averaged across batch
+                total_samples += batch_size 
+
+            total_loss /= total_samples
+
+        return (predictions, total_loss)
 
 
