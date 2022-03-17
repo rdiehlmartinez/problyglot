@@ -93,7 +93,12 @@ class Evaluator(object):
                 else:
                     inference_params = finetune_method(finetune_dataloader, **eval_task_params)
 
-                predictions, eval_loss = inference_method(evaluation_dataloader, **inference_params, adaptation_batch=None)
+                adaptation_batch = None
+                if dataset_generator.adapt_on_eval:
+                    # adapt on the first batch of the evaluation datalaoder
+                    adaptation_batch = next(iter(evaluation_dataloader))
+
+                predictions, eval_loss = inference_method(evaluation_dataloader, **inference_params, adaptation_batch=adaptation_batch)
 
                 # compute metrics using predictions 
                 metric = compute_metric(predictions, evaluation_dataloader)

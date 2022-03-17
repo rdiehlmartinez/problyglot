@@ -41,6 +41,10 @@ class XNLIDatasetGenerator():
             # TODO
             raise NotImplementedError()
 
+        # if adapt_on_eval is set to True then we adapt on the evaluation set in addition to also adapting 
+        # on the finetuning set 
+        self.adapt_on_eval = config.getboolean("XNLI_DATASET", "adapt_on_eval", fallback=False)
+
         self.language_files = self._get_language_files(self.root_path)
 
     def _get_language_files(self, root_path):
