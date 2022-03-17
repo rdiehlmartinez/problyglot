@@ -57,11 +57,13 @@ class Evaluator(object):
 
                 if eval_task_type == "classification": 
                     # TODO: use config to run different inference experiments 
-                    finetuned_params, task_classifier_weights = learner.run_finetuning_classification(finetune_dataloader,
-                                                                                                      **eval_task_params)
-                    learner.run_inference_classification(evaluation_dataloader, finetuned_params=finetuned_params,
-                                                                                task_classifier_weights=task_classifier_weights,
-                                                                                adaptation_batch=None)  
+                    # TODO: allow the finetuning to just be run once (if multiple models adapted on same initial one)
+                    inference_params = learner.run_finetuning_classification(finetune_dataloader, **eval_task_params)
+                    predictions, eval_loss = learner.run_inference_classification(evaluation_dataloader, 
+                                                                                  **inference_params,
+                                                                                  adaptation_batch=None)
+                    print(eval_loss)
+                    exit()
                 else: 
                     raise Exception(f"Invalid task type: {eval_task_type} for task: {eval_task}")
 

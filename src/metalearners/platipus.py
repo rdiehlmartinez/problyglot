@@ -398,7 +398,7 @@ class Platipus(BaseLearner):
             * n_classes (int): the number of classes to classify over
 
         Returns:
-            * Tuple containing: 
+            * inference_params dict containing: 
                 * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
                 * task_classifier_weights (dict): weights of classifier layer; see 
                     _initialize_task_classifier_weights for explanation of dict values
@@ -434,9 +434,12 @@ class Platipus(BaseLearner):
             if batch_idx == 2:
                 break
 
-        finetuned_params = finetuned_theta
+        inference_params = {
+            "finetuned_params": finetuned_theta,
+            "task_classifier_weights": task_classifier_weights
+        }
 
-        return (finetuned_params, task_classifier_weights)
+        return inference_params
 
 
     def run_inference_classification(self, inference_dataloader, finetuned_params=None, 
@@ -452,7 +455,7 @@ class Platipus(BaseLearner):
         (adaptation_batch). 
 
         Args: 
-            * inference_dataloader (torch.data.Dataloader): The dataset for finetuning the model is passed
+            * inference_dataloader (torch.data.Dataloader): The dataset for inference is passed
                 in as a dataloader (in most cases this will be an NLUDataloader)
             * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
             * task_classifier_weights (dict): weights of classifier layer; see 

@@ -5,6 +5,8 @@ import abc
 
 class BaseLearner(metaclass=abc.ABCMeta):
 
+    # Methods for training model 
+
     @abc.abstractmethod
     def optimizer_step(self, set_zero_grad=False):
         """ 
@@ -31,5 +33,34 @@ class BaseLearner(metaclass=abc.ABCMeta):
 
         Returns: 
             * loss (torch.tensor): a tensor containing the loss that results from the inner loop 
+        """
+        raise NotImplementedError()
+
+    # Methods for evaluating model 
+
+    @abc.abstractmethod
+    def run_finetuning_classification(self, finetune_dataloader, *args, **kwargs):
+        """
+        Args:
+            * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model is passed
+                in as a dataloader (in most cases this will be an NLUDataloader)
+
+        Returns:
+            * inference_params ({}): Returns any sort of params that need to be used for the 
+                run_inference_classification method (e.g. finetuned weights of the model for platipus)
+        """ 
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def run_inference_classification(self, inference_dataloader, *args, **kwargs):
+        """
+        Args: 
+            * inference_dataloader (torch.data.Dataloader): The dataset for inference is passed
+                in as a dataloader (in most cases this will be an NLUDataloader)
+
+        Returns: 
+            * predictions ([int]): a dictionary storing the model's predictions for each 
+                datapoint passed in from the inference_dataloader as an int. 
+            * loss (int): the value of the classification loss on the inference dataset.
         """
         raise NotImplementedError()
