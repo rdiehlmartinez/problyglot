@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # We always use the XLM sentencepiece tokenizer
 tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
 
-# to stop the huggingface tokenizer from giving the sequence longe than 512 warning 
+# to stop the huggingface tokenizer from giving the sequence longer than 512 warning 
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
 
 class XNLIDatasetGenerator():
@@ -44,7 +44,10 @@ class XNLIDatasetGenerator():
 
         # if adapt_on_eval is set to True then we adapt on the evaluation set in addition to also adapting 
         # on the finetuning set 
-        self.adapt_on_eval = config.getboolean("XNLI_DATASET", "adapt_on_eval", fallback=False)
+        self.adapt_on_eval = config.getboolean("XNLI_DATASET", "adapt_on_eval", fallback=True)
+
+        if (self.adapt_on_eval == self.use_few_shot_adaptation):
+            logger.warning("Both few shot adaptation and adaptation on evaluation set are set to the same value")
 
         self.language_files = self._get_language_files(self.root_path)
 
@@ -102,7 +105,11 @@ class XNLIDatasetGenerator():
         """
 
         for language_file_dict in self.language_files:
-            finetune_dataset = XNLIDataset(*language_file_dict['finetune'], translated=self.use_few_shot_adaptation)
+            # the finetuning set is translated if few shot learning is set and the current language 
+            # is not english
+            finetune_translated = self.use_few_shot_adaptation and language_file_dict['finetune'][0] != "en"
+
+            finetune_dataset = XNLIDataset(*language_file_dict['finetune'], translated=finetune_translated)
             evaluation_dataset = XNLIDataset(*language_file_dict['evaluation'])
 
             yield (finetune_dataset, evaluation_dataset)
@@ -147,6 +154,8 @@ class XNLIDataset(IterableDataset):
             text_a = split_line[2]
             text_b = split_line[3]
             label = split_line[4].strip()
+            if label == 'contradictory':
+                label = 'contradiction'
         else:
             text_a = split_line[0]
             text_b = split_line[1]
@@ -186,13 +195,8 @@ def main():
 
     for finetune_dataset, evaluation_dataset in dataset_generator:
 
-        finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=3) 
+        finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=1280) 
         evaluation_dataloader = NLUDataLoader(evaluation_dataset, batch_size=3)
-
-        print(next(iter(finetune_dataloader)))
-        print(next(iter(evaluation_dataloader)))
-        break
-
 
 if __name__ == '__main__':
     main()
