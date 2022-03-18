@@ -117,6 +117,9 @@ class MetaDataset(IterableDataset):
         logger.info("Shutting down worker nodes for data processing")
         for _, dataset in self.datasets.items(): 
             dataset.shutdown()
+        
+        # to play nicely with wandb
+        time.sleep(1)
 
     def __next__(self):
         """

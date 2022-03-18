@@ -3,6 +3,7 @@ __author__ = 'Richard Diehl Martinez'
 
 import typing
 import logging 
+import wandb
 
 from .models import XLMR
 from .metalearners import Platipus
@@ -20,7 +21,6 @@ class Problyglot(object):
 
     def __init__(self, config) -> None:
         """ Initialize base model and meta learning method """
-
         # setting up meta dataset for training if provided in config
         if 'META_DATASET' in config:
             self.meta_dataset = MetaDataset(config)
@@ -41,6 +41,10 @@ class Problyglot(object):
         learner_method = config.get("LEARNER", "method")
         self.learner = self.load_learner(learner_method)
 
+        # setting up metrics for logging of training 
+        wandb.define_metric("num_task_batches")
+        wandb.define_metric("train*", step_metric="num_task_batches")
+
         # setting evaluator 
         if 'EVALUATION' in config:
             self.evaluator = Evaluator(config)
@@ -48,7 +52,7 @@ class Problyglot(object):
         # setting problyglot specific configurations
         self.num_tasks_per_iteration = config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
         self.eval_every_n_iteration = config.getint("PROBLYGLOT", "eval_every_n_iteration", fallback=0)
-        
+
 
     def load_model(self, base_model_name):
         """ Helper function for reading in base model - should be intialized with from_kwargs() class method """
@@ -110,17 +114,21 @@ class Problyglot(object):
             task_batch_loss += task_loss.detach().item()
 
             if ((batch_idx + 1) % self.num_tasks_per_iteration == 0):
+                
                 num_task_batches += 1
 
                 self.learner.optimizer_step(set_zero_grad=True)
                 logger.info(f"No. batches of tasks processed: {num_task_batches} -- Task batch loss: {task_batch_loss}")
+                wandb.log({"train": {"loss": task_batch_loss}, "num_task_batches": num_task_batches})
                 task_batch_loss = 0 
 
                 # possibly run evaluation of the model
                 if (self.eval_every_n_iteration and num_task_batches % self.eval_every_n_iteration == 0):
-                    self.evaluator.run(self.learner)
+                    self.evaluator.run(self.learner, num_task_batches=num_task_batches)                 
+
+                if num_task_batches == 2:
                     self.meta_dataset.shutdown()
-                    exit()                    
+                    exit()  
 
                 # possibly save a checkpoint of the model 
                 # TODO

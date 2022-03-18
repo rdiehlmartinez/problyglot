@@ -2,6 +2,7 @@ __author__ = 'Richard Diehl Martinez'
 ''' Orchestration of model evaluation '''
 
 import logging
+import wandb
 import numpy as np
 
 from ..datasets import NLUDataLoader, NLU_DATASET_GENERATOR_MAPPING
@@ -35,6 +36,9 @@ class Evaluator(object):
 
         self.batch_size = config.getint("EVALUATION", "batch_size", fallback=32)
 
+        # setting up metrics for logging of evaluation 
+        for eval_task in self.eval_tasks:
+            wandb.define_metric(f"{eval_task}*", step_metric="num_task_batches")
 
     @staticmethod
     def compute_accuracy(predictions, evaluation_dataloader):
@@ -46,13 +50,18 @@ class Evaluator(object):
         accuracy = (np.array(predictions) == np.array(labels)).sum()/len(labels)
         return accuracy
 
-    def run(self, learner):
+    def run(self, learner, num_task_batches=0):
         """ 
         Runs evaluation of the passed in learner on the self.eval_tasks evaluation tasks. 
         Loops over each of the evaluation tasks in self.eval_tasks and for each eval_tasks 
         runs the learner's finetuning procedure and inference procedure. The inference 
         procedure returns some predictions which are then used to compute metrics for each
-        of the tasks.
+        of the tasks. 
+
+        Args:
+            * learner (subclass of BaseLearner): learning procedure 
+            * num_task_batches (int): optional value of the current task batch number 
+                at which we are evaluating
         """
 
         logger.info("#"*30)
@@ -71,7 +80,7 @@ class Evaluator(object):
                 finetune_method = learner.run_finetuning_classification
                 inference_method = learner.run_inference_classification
                 compute_metric = self.compute_accuracy
-                metric_name = "Acc"
+                metric_name = "acc"
             else: 
                 raise Exception(f"Invalid task type: {eval_task_type} for task: {eval_task}")
 
@@ -103,6 +112,14 @@ class Evaluator(object):
                 # compute metrics using predictions 
                 metric = compute_metric(predictions, evaluation_dataloader)
                 logger.info(f"\t \t {metric_name}: {metric:.4f} - Eval Loss: {eval_loss:.4f}")
+                wandb.log({eval_task: {
+                                evaluation_language: {
+                                    "loss": eval_loss,
+                                    metric_name: metric,
+                                },
+                            },
+                           "num_task_batches": num_task_batches
+                        })
             
                 eval_task_metrics.append(metric)
                 eval_task_losses.append(eval_loss)

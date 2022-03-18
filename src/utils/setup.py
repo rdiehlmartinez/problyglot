@@ -6,6 +6,8 @@ import logging
 import torch 
 import numpy as np
 import random
+import wandb
+import json
 
 from configparser import ConfigParser
 
@@ -43,11 +45,20 @@ def setup_logger(config_file_path):
     )
     logging.info(f"Initializing experiment: {experiment_directory}")
 
+def setup_wandb(config):
+    """
+    Sets up logging and model experimentation using weights & biases 
+    """
+
+    dict_config = json.loads(json.dumps(config._sections))
+    wandb.init(project="test", entity="problyglot", config=dict_config)
+
 def setup(config_file_path):
-    ''' 
+    """
     Reads in config file, sets up logger and sets a seed to ensure reproducibility.
-    '''
+    """
     config = setup_config(config_file_path)
     setup_logger(config_file_path)
+    setup_wandb(config)
     set_seed(config.getint("EXPERIMENT", "set_seed", fallback=42))
     return config
