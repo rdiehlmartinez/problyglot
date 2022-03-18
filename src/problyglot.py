@@ -47,10 +47,6 @@ class Problyglot(object):
         # setting evaluator 
         if 'EVALUATION' in config:
             self.evaluator = Evaluator(config)
-        
-        # setting problyglot specific configurations
-        self.num_tasks_per_iteration = config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
-        self.eval_every_n_iteration = config.getint("PROBLYGLOT", "eval_every_n_iteration", fallback=0)
 
 
     def load_model(self, base_model_name):
@@ -92,7 +88,12 @@ class Problyglot(object):
         Train the self.base_model via the self.learner training procedure 
         on data stored in self.meta_dataloader
         """
-        logger.info("Beginning to train model")
+        logger.info("Beginning model training")
+
+        # setting problyglot training configurations
+        num_tasks_per_iteration = self.config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
+        eval_every_n_iteration = self.config.getint("PROBLYGLOT", "eval_every_n_iteration", fallback=0)
+        max_task_batch_steps = self.config.getint("PROBLYGLOT", "eval_every_n_iteration", fallback=1)
 
         # counter tracks number of batches of tasks seen by metalearner
         num_task_batches = 0 
@@ -111,11 +112,11 @@ class Problyglot(object):
             query_batch = move_to_device(query_batch, self.device)
 
             task_loss = self.learner.run_inner_loop(support_batch, query_batch)            
-            task_loss = task_loss / self.num_tasks_per_iteration # normalizing loss 
+            task_loss = task_loss / num_tasks_per_iteration # normalizing loss 
             task_loss.backward()
             task_batch_loss += task_loss.detach().item()
 
-            if ((batch_idx + 1) % self.num_tasks_per_iteration == 0):
+            if ((batch_idx + 1) % num_tasks_per_iteration == 0):
                 
                 num_task_batches += 1
 
@@ -125,16 +126,13 @@ class Problyglot(object):
                 task_batch_loss = 0 
 
                 # possibly run evaluation of the model
-                if (self.eval_every_n_iteration and num_task_batches % self.eval_every_n_iteration == 0):
+                if (eval_every_n_iteration and num_task_batches % eval_every_n_iteration == 0):
                     self.evaluator.run(self.learner, num_task_batches=num_task_batches)                 
 
-                if num_task_batches == 2:
-                    self.meta_dataset.shutdown()
-                    exit()  
-
-                # possibly save a checkpoint of the model 
-                # TODO
-
+                if (num_task_batches % max_task_batch_steps == 0):
+                    break
+                
+                logger.info("Resuming model training")
 
         logger.info("Finished training model")
         logger.info("Shutting down meta dataloader workers")

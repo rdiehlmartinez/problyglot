@@ -2,8 +2,16 @@ __author__ = 'Richard Diehl Martinez'
 ''' Base ABC Class for (meta) learners '''
 
 import abc 
+import torch
 
-class BaseLearner(metaclass=abc.ABCMeta):
+class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
+
+    def __init__(self):
+        """
+        BaseLearner establishes the inferface for the learner class and 
+        inherents from torch.nn.Module
+        """
+        super().__init__()
 
     # Methods for training model 
 

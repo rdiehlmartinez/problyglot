@@ -2,9 +2,12 @@ __author__ = 'Richard Diehl Martinez'
 ''' Orchestration of model evaluation '''
 
 import logging
+import os
+import torch
 import wandb
 import numpy as np
 
+from collections import defaultdict
 from ..datasets import NLUDataLoader, NLU_DATASET_GENERATOR_MAPPING
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,11 @@ class Evaluator(object):
 
         self.batch_size = config.getint("EVALUATION", "batch_size", fallback=32)
 
+        self.save_checkpoints = config.getboolean("EVALUATION", "save_checkpoints", fallback=False)
+        # possibly track of previous runs of the evaluator for checkpoint purposes
+        if self.save_checkpoints:
+            self.eval_run_tracker = defaultdict(list)
+
     @staticmethod
     def compute_accuracy(predictions, evaluation_dataloader):
         """ Computes accuracy of predictions extraction from data of the evaluation_dataloader """
@@ -63,6 +71,8 @@ class Evaluator(object):
         logger.info("")
         logger.info("-"*30)
         logger.info("Running evaluator")
+
+        save_current_checkpoint = False
 
         for idx, eval_task in enumerate(self.eval_tasks):
             logger.info("*"*20)
@@ -141,7 +151,21 @@ class Evaluator(object):
 
             logger.info(f"\t (Task {idx}) Avg. {metric_name}: {eval_task_metrics_mean:.4f} Avg Loss: {eval_task_loss_mean:.4f}")
 
+            # Possibly writing out checkpoint 
+            if self.save_checkpoints:
+                self.eval_run_tracker[f'{eval_task}.{metric_name}'].append(eval_task_metrics_mean)
+
+                best_function = max if metric_summary == 'max' else min
+
+                if best_function(self.eval_run_tracker[f'{eval_task}.{metric_name}']) == eval_task_metrics_mean:
+                    save_current_checkpoint = True
+
+
         logger.info("*"*20)
         logger.info("Finished evaluator")
+        if save_current_checkpoint:
+            logger.info(f"Saving model checkpoint at task batch number: {num_task_batches}")
+            torch.save(learner.state_dict(), os.path.join(wandb.run.dir, f"checkpoint-{num_task_batches}.pt"))
         logger.info("-"*30)
         logger.info("")
+
