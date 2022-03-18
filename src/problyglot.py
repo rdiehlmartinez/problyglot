@@ -41,9 +41,8 @@ class Problyglot(object):
         learner_method = config.get("LEARNER", "method")
         self.learner = self.load_learner(learner_method)
 
-        # setting up metrics for logging of training 
+        # setting up metrics for logging to wandb
         wandb.define_metric("num_task_batches")
-        wandb.define_metric("train*", step_metric="num_task_batches")
 
         # setting evaluator 
         if 'EVALUATION' in config:
@@ -100,6 +99,9 @@ class Problyglot(object):
 
         # counter tracks loss over an entire batch of tasks  
         task_batch_loss = 0 
+
+        # metric for logging training data
+        wandb.define_metric("train.loss", step_metric="num_task_batches", summary='min')
 
         for batch_idx, batch in enumerate(self.meta_dataloader):
             task_name, support_batch, query_batch = batch

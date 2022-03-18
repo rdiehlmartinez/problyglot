@@ -51,7 +51,9 @@ def setup_wandb(config):
     """
 
     dict_config = json.loads(json.dumps(config._sections))
-    wandb.init(project="test", entity="problyglot", config=dict_config)
+    wandb.init(project=config.get("EXPERIMENT", "name"),
+               entity="problyglot",
+               config=dict_config)
 
 def setup(config_file_path):
     """

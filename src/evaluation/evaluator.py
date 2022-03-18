@@ -36,10 +36,6 @@ class Evaluator(object):
 
         self.batch_size = config.getint("EVALUATION", "batch_size", fallback=32)
 
-        # setting up metrics for logging of evaluation 
-        for eval_task in self.eval_tasks:
-            wandb.define_metric(f"{eval_task}*", step_metric="num_task_batches")
-
     @staticmethod
     def compute_accuracy(predictions, evaluation_dataloader):
         """ Computes accuracy of predictions extraction from data of the evaluation_dataloader """
@@ -64,7 +60,8 @@ class Evaluator(object):
                 at which we are evaluating
         """
 
-        logger.info("#"*30)
+        logger.info("")
+        logger.info("-"*30)
         logger.info("Running evaluator")
 
         for idx, eval_task in enumerate(self.eval_tasks):
@@ -81,6 +78,7 @@ class Evaluator(object):
                 inference_method = learner.run_inference_classification
                 compute_metric = self.compute_accuracy
                 metric_name = "acc"
+                metric_summary = 'max'
             else: 
                 raise Exception(f"Invalid task type: {eval_task_type} for task: {eval_task}")
 
@@ -109,6 +107,10 @@ class Evaluator(object):
 
                 predictions, eval_loss = inference_method(evaluation_dataloader, **inference_params, adaptation_batch=adaptation_batch)
 
+                # For logging of metric
+                wandb.define_metric(f"{eval_task}.{evaluation_language}.{metric_name}", step_metric="num_task_batches", summary=metric_summary)
+                wandb.define_metric(f"{eval_task}.{evaluation_language}.loss", step_metric="num_task_batches", summary='min')
+
                 # compute metrics using predictions 
                 metric = compute_metric(predictions, evaluation_dataloader)
                 logger.info(f"\t \t {metric_name}: {metric:.4f} - Eval Loss: {eval_loss:.4f}")
@@ -126,8 +128,20 @@ class Evaluator(object):
                 
             eval_task_metrics_mean = sum(eval_task_metrics)/len(eval_task_metrics)
             eval_task_loss_mean = sum(eval_task_losses)/len(eval_task_losses)
+
+            wandb.define_metric(f"{eval_task}.{metric_name}", step_metric="num_task_batches", summary=metric_summary)
+            wandb.define_metric(f"{eval_task}.loss", step_metric="num_task_batches", summary='min')
+
+            wandb.log({eval_task: {
+                        "loss": eval_task_loss_mean,
+                        metric_name: eval_task_metrics_mean,
+                       },
+                      "num_task_batches": num_task_batches
+                    })
+
             logger.info(f"\t (Task {idx}) Avg. {metric_name}: {eval_task_metrics_mean:.4f} Avg Loss: {eval_task_loss_mean:.4f}")
 
         logger.info("*"*20)
         logger.info("Finished evaluator")
-        logger.info("#"*30)
+        logger.info("-"*30)
+        logger.info("")
