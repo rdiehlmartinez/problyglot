@@ -2,6 +2,7 @@ __author__ = 'Richard Diehl Martinez'
 ''' Wrapper class for training and evaluating a model using a given meta learning technique '''
 
 import typing
+import torch
 import logging 
 import wandb
 
@@ -81,6 +82,16 @@ class Problyglot(object):
         else:
             raise Exception(f"Invalid learner method: learner_method")
 
+        # possibly load in learner checkpoint
+        checkpoint_file = self.config.get("LEARNER", "checkpoint_file", fallback="")
+        if checkpoint_file:
+            checkpoint_run = self.config.get("LEARNER", "checkpoint_run")
+            logger.info(f"Loading in checkpoint file: {checkpoint_file}")
+            checkpoint_model = wandb.restore(checkpoint_file, run_path=checkpoint_run)
+            learner.load_state_dict(torch.load(checkpoint_model.name))
+        else:
+            logger.info("No checkpoint used - learning from scratch")
+
         return learner
 
     def train(self) -> None: 
@@ -93,7 +104,7 @@ class Problyglot(object):
         # setting problyglot training configurations
         num_tasks_per_iteration = self.config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
         eval_every_n_iteration = self.config.getint("PROBLYGLOT", "eval_every_n_iteration", fallback=0)
-        max_task_batch_steps = self.config.getint("PROBLYGLOT", "eval_every_n_iteration", fallback=1)
+        max_task_batch_steps = self.config.getint("PROBLYGLOT", "max_task_batch_steps", fallback=1)
 
         # counter tracks number of batches of tasks seen by metalearner
         num_task_batches = 0 
