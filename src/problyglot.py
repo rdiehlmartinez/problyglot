@@ -5,6 +5,7 @@ import typing
 import torch
 import logging 
 import wandb
+import os 
 
 from .models import XLMR
 from .metalearners import Platipus
@@ -89,6 +90,7 @@ class Problyglot(object):
             logger.info(f"Loading in checkpoint file: {checkpoint_file}")
             checkpoint_model = wandb.restore(checkpoint_file, run_path=checkpoint_run)
             learner.load_state_dict(torch.load(checkpoint_model.name))
+            os.rename(os.path.join(wandb.run.dir, checkpoint_file), os.path.join(wandb.run.dir, "loaded_checkpoint.pt"))
         else:
             logger.info("No checkpoint used - learning from scratch")
 
@@ -146,5 +148,8 @@ class Problyglot(object):
                 logger.info("Resuming model training")
 
         logger.info("Finished training model")
+        if self.config.getboolean('PROBLYGLOT', 'save_final_model', default=True):
+            logger.info(f"Saving trained model")
+            torch.save(self.learner.state_dict(), os.path.join(wandb.run.dir, f"final.pt"))
         logger.info("Shutting down meta dataloader workers")
         self.meta_dataset.shutdown()

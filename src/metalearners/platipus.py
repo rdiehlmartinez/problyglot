@@ -73,9 +73,9 @@ class Platipus(BaseLearner):
         self.base_model_hidden_dim = base_model.hidden_dim 
         
         # establishing meta parameters to-be learned
-        self.mu_theta = [] 
-        self.log_sigma_theta = []
-        self.log_v_q = []
+        self.mu_theta = torch.nn.ParameterList()
+        self.log_sigma_theta = torch.nn.ParameterList()
+        self.log_v_q = torch.nn.ParameterList()
         for param in base_model.parameters():
             self.mu_theta.append(param) # global mean parameters initialized as the weights of the base model
             self.log_sigma_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device) - 4, requires_grad=param.requires_grad))
@@ -113,6 +113,22 @@ class Platipus(BaseLearner):
 
         self.task_embedding_method = task_embedding_method
 
+    # Overriding nn.Module functionality 
+
+    def state_dict(self):
+        """ Overriding method to remove placeholder parameters from functional model"""
+        original_state_dict = super().state_dict()
+        remove_keys = []
+        for key in original_state_dict.keys():
+            if "functional" in key:
+                remove_keys.append(key)
+        
+        for key in remove_keys:
+                original_state_dict.popitem(key)
+
+        return original_state_dict
+
+    # Helper functions
 
     def _run_forward_pass(self, data_batch, params, task_classifier_weights):
         """ 
