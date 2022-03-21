@@ -20,6 +20,10 @@ def kl_divergence_gaussians(p: typing.List[torch.Tensor], q: typing.List[torch.T
     kl_div = 0
     for i in range(n):
         p_mean = p[i]
+        if not p_mean.requires_grad:
+            # Only makes sense to compute kl divergence for parameters we actually learn
+            continue
+
         p_log_std = p[n + i]
 
         q_mean = q[i]

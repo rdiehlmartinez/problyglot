@@ -162,7 +162,7 @@ class IterableLanguageTaskDataset(object):
                                 buffer_size=1e6,
                                 sample_size=10_000,
                                 mask_sampling_method="proportional",
-                                mask_sampling_prop_rate=0.5,
+                                mask_sampling_prop_rate=0.3,
                                 **kwargs): 
         """ 
         Initializes params and data buffers for the iterable dataset. 

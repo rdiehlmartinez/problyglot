@@ -124,9 +124,11 @@ class Problyglot(object):
             support_batch = move_to_device(support_batch, self.device)
             query_batch = move_to_device(query_batch, self.device)
 
-            task_loss = self.learner.run_inner_loop(support_batch, query_batch)            
+            task_loss = self.learner.run_inner_loop(support_batch, query_batch)    
+        
             task_loss = task_loss / num_tasks_per_iteration # normalizing loss 
             task_loss.backward()
+
             task_batch_loss += task_loss.detach().item()
 
             if ((batch_idx + 1) % num_tasks_per_iteration == 0):
@@ -140,13 +142,13 @@ class Problyglot(object):
 
                 # possibly run evaluation of the model
                 if (eval_every_n_iteration and num_task_batches % eval_every_n_iteration == 0):
-                    self.evaluator.run(self.learner, num_task_batches=num_task_batches)                 
+                    self.evaluator.run(self.learner, num_task_batches=num_task_batches)
+                else:
+                    logger.info("Resuming model training")
 
                 if (num_task_batches % max_task_batch_steps == 0):
                     break
                 
-                logger.info("Resuming model training")
-
         logger.info("Finished training model")
         if self.config.getboolean('PROBLYGLOT', 'save_final_model', fallback=True):
             logger.info(f"Saving trained model")

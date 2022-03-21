@@ -28,7 +28,7 @@ class Platipus(BaseLearner):
                                     meta_lr=0.01,
                                     inner_lr=0.01,
                                     kl_weight=0.5,
-                                    num_inner_steps=3,
+                                    num_inner_steps=5,
                                     use_first_order=False,
                                     task_embedding_method='val_grad',
                                     device="cpu",
@@ -49,7 +49,7 @@ class Platipus(BaseLearner):
             * optimizer_type (str) : the type of the optimizer (defaults to 'adam')
             * meta_lr (float): learning rate for the outer loop meta learning step (defaults to 0.01)
             * inner_lr (float): learning rate for the inner loop adaptation step (defaults to 0.01)
-            * kl_weight (float): trade-off hyper-parameter between the CE term and the KL term of the ELBO (defaults to 0.5)
+            * kl_weight (float): trade-off hyper-parameter between the CE term and the KL term of the ELBO
             * num_inner_steps (int): number of gradients steps in the inner looop
             * use_first_order (bool): whether a first order approximation of higher-order gradients should be used (defaults to False)
             * task_embedding_method (str): how to represent the task embedding that is used to condition the task-dependent 
@@ -276,7 +276,7 @@ class Platipus(BaseLearner):
         Returns: 
             * adapted_params (iterable): Iterable of torch.nn.Paramater()s that represent the updated the parameters 
                 after running SGD 
-        """
+        """                                        
 
         if clone_params:
             # copy the parameters but allow gradients to propagate back to original params
@@ -355,7 +355,6 @@ class Platipus(BaseLearner):
         Returns: 
             * loss (torch.Tensor): loss value of the inner loop calculations
         """
-
         # automatically infer the number N of classes
         n_classes = torch.unique(support_batch['label_ids']).numel()
         task_classifier_weights = self._initialize_task_classifier_weights(n_classes)
@@ -445,10 +444,6 @@ class Platipus(BaseLearner):
                                                                clone_params=False,
                                                                evaluation_mode=True,
                                                                override_num_inner_steps=1)
-
-            # TODO: remove me 
-            if batch_idx == 2:
-                break
 
         inference_params = {
             "finetuned_params": finetuned_theta,
