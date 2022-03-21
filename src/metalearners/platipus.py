@@ -11,6 +11,7 @@ import higher
 import logging
 import itertools
 import math
+from collections import OrderedDict
 
 import torch
 import torch.nn.functional as F 
@@ -118,15 +119,15 @@ class Platipus(BaseLearner):
     def state_dict(self):
         """ Overriding method to remove placeholder parameters from functional model"""
         original_state_dict = super().state_dict()
-        remove_keys = []
-        for key in original_state_dict.keys():
-            if "functional" in key:
-                remove_keys.append(key)
-        
-        for key in remove_keys:
-                original_state_dict.popitem(key)
+        updated_state_dict = OrderedDict()
 
-        return original_state_dict
+        for key, val in original_state_dict.items():
+            if "functional" in key:
+                continue
+            
+            updated_state_dict[key] = val
+        
+        return updated_state_dict
 
     # Helper functions
 
