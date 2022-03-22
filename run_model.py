@@ -9,13 +9,15 @@ from src.problyglot import Problyglot
 # Entry point
 @click.command()
 @click.argument('config_fp')
-@click.option('--train-model', default=True)
+@click.option('--train-model/--eval-model', default=True)
 def main(config_fp, train_model):
     config = setup(config_fp)
 
     problyglot = Problyglot(config)
     if train_model:
         problyglot.train()
+    else:
+        raise NotImplementedError("Model evaluation is not currently supported")
 
 if __name__ == '__main__':
     main()
