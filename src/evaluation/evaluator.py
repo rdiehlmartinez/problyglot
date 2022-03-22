@@ -115,7 +115,9 @@ class Evaluator(object):
                     # adapt on the first batch of the evaluation datalaoder
                     adaptation_batch = next(iter(evaluation_dataloader))
 
-                predictions, eval_loss = inference_method(evaluation_dataloader, **inference_params, adaptation_batch=adaptation_batch)
+                predictions, eval_loss = inference_method(evaluation_dataloader, **inference_params,
+                                                                                 **eval_task_params,
+                                                                                 adaptation_batch=adaptation_batch)
 
                 # For logging of metric
                 wandb.define_metric(f"{eval_task}.{evaluation_language}.{metric_name}", step_metric="num_task_batches", summary=metric_summary)
