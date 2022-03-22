@@ -88,8 +88,10 @@ class Problyglot(object):
         if checkpoint_file:
             checkpoint_run = self.config.get("LEARNER", "checkpoint_run")
             logger.info(f"Loading in checkpoint file: {checkpoint_file}")
-            checkpoint_model = wandb.restore(checkpoint_file, run_path=checkpoint_run)
-            learner.load_state_dict(torch.load(checkpoint_model.name), strict=False)
+            wandb_checkpoint = wandb.restore(checkpoint_file, run_path=checkpoint_run)
+            checkpoint = torch.load(wandb_checkpoint.name)
+            learner.load_state_dict(checkpoint['learner_state_dict'], strict=False)
+            learner.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             os.rename(os.path.join(wandb.run.dir, checkpoint_file), os.path.join(wandb.run.dir, "loaded_checkpoint.pt"))
         else:
             logger.info("No checkpoint used - learning from scratch")
@@ -152,6 +154,10 @@ class Problyglot(object):
         logger.info("Finished training model")
         if self.config.getboolean('PROBLYGLOT', 'save_final_model', fallback=True):
             logger.info(f"Saving trained model")
-            torch.save(self.learner.state_dict(), os.path.join(wandb.run.dir, f"final.pt"))
+            checkpoint = {
+                'learner_state_dict': self.learner.state_dict(),
+                'optimizer_state_dict': self.learner.optimizer.state_dict(),
+            }
+            torch.save(checkpoint, os.path.join(wandb.run.dir, f"final.pt"))
         logger.info("Shutting down meta dataloader workers")
         self.meta_dataset.shutdown()

@@ -167,7 +167,11 @@ class Evaluator(object):
         logger.info("Finished evaluator")
         if save_current_checkpoint:
             logger.info(f"Saving model checkpoint at task batch number: {num_task_batches}")
-            torch.save(learner.state_dict(), os.path.join(wandb.run.dir, f"checkpoint-{num_task_batches}.pt"))
+            checkpoint = {
+                'learner_state_dict': learner.state_dict(),
+                'optimizer_state_dict': learner.optimizer.state_dict(),
+            }
+            torch.save(checkpoint, os.path.join(wandb.run.dir, f"checkpoint-{num_task_batches}.pt"))
         logger.info("-"*30)
         logger.info("")
 
