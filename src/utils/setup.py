@@ -49,11 +49,11 @@ def setup_wandb(config):
     """
     Sets up logging and model experimentation using weights & biases 
     """
-
-    dict_config = json.loads(json.dumps(config._sections))
-    wandb.init(project=config.get("EXPERIMENT", "name"),
-               entity="problyglot",
-               config=dict_config)
+    if config.getboolean('EXPERIMENT', 'use_wandb', fallback=True):
+        dict_config = json.loads(json.dumps(config._sections))
+        wandb.init(project=config.get("EXPERIMENT", "name"),
+                entity="problyglot",
+                config=dict_config)
 
 def setup(config_file_path):
     """

@@ -43,13 +43,15 @@ class Problyglot(object):
         learner_method = config.get("LEARNER", "method")
         self.learner = self.load_learner(learner_method)
 
-        # setting up metrics for logging to wandb
-        wandb.define_metric("num_task_batches")
+        self.use_wandb = config.getboolean('EXPERIMENT', 'use_wandb', fallback=True)
+
+        if self.use_wandb:
+            # setting up metrics for logging to wandb
+            wandb.define_metric("num_task_batches")
 
         # setting evaluator 
         if 'EVALUATION' in config:
             self.evaluator = Evaluator(config)
-
 
     def load_model(self, base_model_name):
         """ Helper function for reading in base model - should be intialized with from_kwargs() class method """
@@ -86,13 +88,16 @@ class Problyglot(object):
         # possibly load in learner checkpoint
         checkpoint_file = self.config.get("LEARNER", "checkpoint_file", fallback="")
         if checkpoint_file:
-            checkpoint_run = self.config.get("LEARNER", "checkpoint_run")
-            logger.info(f"Loading in checkpoint file: {checkpoint_file}")
-            wandb_checkpoint = wandb.restore(checkpoint_file, run_path=checkpoint_run)
-            checkpoint = torch.load(wandb_checkpoint.name)
-            learner.load_state_dict(checkpoint['learner_state_dict'], strict=False)
-            learner.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            os.rename(os.path.join(wandb.run.dir, checkpoint_file), os.path.join(wandb.run.dir, "loaded_checkpoint.pt"))
+            if not self.use_wandb:
+                logger.warning("Could not load in checkpoint file becase use_wandb is set to False")
+            else:
+                checkpoint_run = self.config.get("LEARNER", "checkpoint_run")
+                logger.info(f"Loading in checkpoint file: {checkpoint_file}")
+                wandb_checkpoint = wandb.restore(checkpoint_file, run_path=checkpoint_run)
+                checkpoint = torch.load(wandb_checkpoint.name)
+                learner.load_state_dict(checkpoint['learner_state_dict'], strict=False)
+                learner.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                os.rename(os.path.join(wandb.run.dir, checkpoint_file), os.path.join(wandb.run.dir, "loaded_checkpoint.pt"))
         else:
             logger.info("No checkpoint used - learning from scratch")
 
@@ -117,7 +122,8 @@ class Problyglot(object):
         task_batch_loss = 0 
 
         # metric for logging training data
-        wandb.define_metric("train.loss", step_metric="num_task_batches", summary='min')
+        if self.use_wandb:
+            wandb.define_metric("train.loss", step_metric="num_task_batches", summary='min')
 
         for batch_idx, batch in enumerate(self.meta_dataloader):
             task_name, support_batch, query_batch = batch
@@ -139,7 +145,8 @@ class Problyglot(object):
 
                 self.learner.optimizer_step(set_zero_grad=True)
                 logger.info(f"No. batches of tasks processed: {num_task_batches} -- Task batch loss: {task_batch_loss}")
-                wandb.log({"train": {"loss": task_batch_loss}, "num_task_batches": num_task_batches})
+                if self.use_wandb:
+                    wandb.log({"train": {"loss": task_batch_loss}, "num_task_batches": num_task_batches})
                 task_batch_loss = 0 
 
                 # possibly run evaluation of the model
@@ -153,11 +160,14 @@ class Problyglot(object):
                 
         logger.info("Finished training model")
         if self.config.getboolean('PROBLYGLOT', 'save_final_model', fallback=True):
-            logger.info(f"Saving trained model")
-            checkpoint = {
-                'learner_state_dict': self.learner.state_dict(),
-                'optimizer_state_dict': self.learner.optimizer.state_dict(),
-            }
-            torch.save(checkpoint, os.path.join(wandb.run.dir, f"final.pt"))
+            if not self.use_wandb:
+                logger.error("Cannot save model checkpoint because use_wandb set to False")
+            else:
+                logger.info(f"Saving trained model")
+                checkpoint = {
+                    'learner_state_dict': self.learner.state_dict(),
+                    'optimizer_state_dict': self.learner.optimizer.state_dict(),
+                }
+                torch.save(checkpoint, os.path.join(wandb.run.dir, f"final.pt"))
         logger.info("Shutting down meta dataloader workers")
         self.meta_dataset.shutdown()

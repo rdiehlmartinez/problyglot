@@ -44,6 +44,8 @@ class Evaluator(object):
         if self.save_checkpoints:
             self.eval_run_tracker = defaultdict(list)
 
+        self.use_wandb = config.getboolean('EXPERIMENT', 'use_wandb', fallback=True)
+
     @staticmethod
     def compute_accuracy(predictions, evaluation_dataloader):
         """ Computes accuracy of predictions extraction from data of the evaluation_dataloader """
@@ -120,20 +122,22 @@ class Evaluator(object):
                                                                                  adaptation_batch=adaptation_batch)
 
                 # For logging of metric
-                wandb.define_metric(f"{eval_task}.{evaluation_language}.{metric_name}", step_metric="num_task_batches", summary=metric_summary)
-                wandb.define_metric(f"{eval_task}.{evaluation_language}.loss", step_metric="num_task_batches", summary='min')
+                if self.use_wandb:
+                    wandb.define_metric(f"{eval_task}.{evaluation_language}.{metric_name}", step_metric="num_task_batches", summary=metric_summary)
+                    wandb.define_metric(f"{eval_task}.{evaluation_language}.loss", step_metric="num_task_batches", summary='min')
 
                 # compute metrics using predictions 
                 metric = compute_metric(predictions, evaluation_dataloader)
                 logger.info(f"\t \t {metric_name}: {metric:.4f} - Eval Loss: {eval_loss:.4f}")
-                wandb.log({eval_task: {
-                                evaluation_language: {
-                                    "loss": eval_loss,
-                                    metric_name: metric,
+                if self.use_wandb:
+                    wandb.log({eval_task: {
+                                    evaluation_language: {
+                                        "loss": eval_loss,
+                                        metric_name: metric,
+                                    },
                                 },
-                            },
-                           "num_task_batches": num_task_batches
-                        })
+                            "num_task_batches": num_task_batches
+                            })
             
                 eval_task_metrics.append(metric)
                 eval_task_losses.append(eval_loss)
@@ -141,15 +145,16 @@ class Evaluator(object):
             eval_task_metrics_mean = sum(eval_task_metrics)/len(eval_task_metrics)
             eval_task_loss_mean = sum(eval_task_losses)/len(eval_task_losses)
 
-            wandb.define_metric(f"{eval_task}.{metric_name}", step_metric="num_task_batches", summary=metric_summary)
-            wandb.define_metric(f"{eval_task}.loss", step_metric="num_task_batches", summary='min')
+            if self.use_wandb:
+                wandb.define_metric(f"{eval_task}.{metric_name}", step_metric="num_task_batches", summary=metric_summary)
+                wandb.define_metric(f"{eval_task}.loss", step_metric="num_task_batches", summary='min')
 
-            wandb.log({eval_task: {
-                        "loss": eval_task_loss_mean,
-                        metric_name: eval_task_metrics_mean,
-                       },
-                      "num_task_batches": num_task_batches
-                    })
+                wandb.log({eval_task: {
+                            "loss": eval_task_loss_mean,
+                            metric_name: eval_task_metrics_mean,
+                        },
+                        "num_task_batches": num_task_batches
+                        })
 
             logger.info(f"\t (Task {idx}) Avg. {metric_name}: {eval_task_metrics_mean:.4f} Avg Loss: {eval_task_loss_mean:.4f}")
 
@@ -166,12 +171,15 @@ class Evaluator(object):
         logger.info("*"*20)
         logger.info("Finished evaluator")
         if save_current_checkpoint:
-            logger.info(f"Saving model checkpoint at task batch number: {num_task_batches}")
-            checkpoint = {
-                'learner_state_dict': learner.state_dict(),
-                'optimizer_state_dict': learner.optimizer.state_dict(),
-            }
-            torch.save(checkpoint, os.path.join(wandb.run.dir, f"checkpoint-{num_task_batches}.pt"))
+            if not self.use_wandb:
+                logger.error("Cannot save model checkpoint because use_wandb set to False")
+            else:
+                logger.info(f"Saving model checkpoint at task batch number: {num_task_batches}")
+                checkpoint = {
+                    'learner_state_dict': learner.state_dict(),
+                    'optimizer_state_dict': learner.optimizer.state_dict(),
+                }
+                torch.save(checkpoint, os.path.join(wandb.run.dir, f"checkpoint-{num_task_batches}.pt"))
         logger.info("-"*30)
         logger.info("")
 
