@@ -26,8 +26,6 @@ logger = logging.getLogger(__name__)
 class Platipus(BaseLearner):
     def __init__(self, base_model,  optimizer_type='adam',
                                     meta_lr=0.01,
-                                    inner_lr=0.01,
-                                    classifier_lr=0.1,
                                     kl_weight=0.5,
                                     num_inner_steps=5,
                                     use_first_order=False,
@@ -50,8 +48,6 @@ class Platipus(BaseLearner):
             * base_model (implementation of BaseModel)
             * optimizer_type (str) : the type of the optimizer (defaults to 'adam')
             * meta_lr (float): learning rate for the outer loop meta learning step (defaults to 0.01)
-            * inner_lr (float): learning rate for the inner loop adaptation step (defaults to 0.01)
-            * classifier_lr(float): learning rate for the final task classifir layer (defaults to 0.1)
             * kl_weight (float): trade-off hyper-parameter between the CE term and the KL term of the ELBO
             * num_inner_steps (int): number of gradients steps in the inner looop
             * use_first_order (bool): whether a first order approximation of higher-order gradients should be used (defaults to False)
@@ -89,7 +85,10 @@ class Platipus(BaseLearner):
         self.gamma_p = torch.nn.Parameter(data=torch.tensor(1e-2).to(self.device))
         self.gamma_q = torch.nn.Parameter(data=torch.tensor(1e-2).to(self.device))
 
-        self.all_meta_params = itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, [self.gamma_p, self.gamma_q])
+        self.inner_lr = torch.nn.Parameter(data=torch.tensor(1e-2).to(self.device))
+        self.classifier_lr = torch.nn.Parameter(data=torch.tensor(1e-1).to(self.device))
+
+        self.all_meta_params = itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr])
 
         # loading in meta optimizer 
         self.meta_lr = float(meta_lr)
@@ -97,12 +96,6 @@ class Platipus(BaseLearner):
             self.optimizer = torch.optim.Adam(params=self.all_meta_params, lr=self.meta_lr)
         else: 
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
-
-        # fixed learning rate used for finetune adapting task-specific phi weights
-        self.inner_lr = float(inner_lr)
-
-        # fixed learning rate for updating the weights of the final classifier layer
-        self.classifier_lr = float(classifier_lr)
 
         # hyper-param for trading off ce-loss and kl-loss
         self.kl_weight = float(kl_weight)
@@ -355,8 +348,8 @@ class Platipus(BaseLearner):
                     inputs=[task_classifier_weights["weight"], task_classifier_weights["bias"]],
                 )
 
-                task_classifier_weights["weight"] = task_classifier_weights["weight"] -  self.classifier_lr * classifier_grads[0]
-                task_classifier_weights["bias"] =  task_classifier_weights["bias"] -  self.classifier_lr * classifier_grads[1]
+                task_classifier_weights["weight"] = task_classifier_weights["weight"] - self.classifier_lr * classifier_grads[0]
+                task_classifier_weights["bias"] =  task_classifier_weights["bias"] - self.classifier_lr * classifier_grads[1]
 
         return adapted_params
 
@@ -458,6 +451,8 @@ class Platipus(BaseLearner):
         """
         if self.task_cls_init_method == 'protomaml':
             task_cls_init_batch = next(iter(finetune_dataloader))
+            task_cls_init_batch = move_to_device(task_cls_init_batch, self.device)
+
             task_classifier_weights = self._initialize_task_classifier_weights(n_classes,
                                                                                data_batch=task_cls_init_batch,
                                                                                params=self.mu_theta)
@@ -487,6 +482,10 @@ class Platipus(BaseLearner):
                                                                clone_params=False,
                                                                evaluation_mode=True,
                                                                override_num_inner_steps=1)
+
+
+            if batch_idx > 20:
+                break
 
         inference_params = {
             "finetuned_params": finetuned_theta,
@@ -532,6 +531,8 @@ class Platipus(BaseLearner):
         if task_classifier_weights is None:
             if self.task_cls_init_method == 'protomaml':
                 task_cls_init_batch = adaptation_batch if adaptation_batch else next(iter(inference_dataloader))
+                task_cls_init_batch = move_to_device(task_cls_init_batch, self.device)
+
                 task_classifier_weights = self._initialize_task_classifier_weights(kwargs['n_classes'],
                                                                                    data_batch=task_cls_init_batch,
                                                                                    params=finetuned_params)
