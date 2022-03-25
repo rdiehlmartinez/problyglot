@@ -105,6 +105,8 @@ class Evaluator(object):
                 finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=self.batch_size)
                 evaluation_dataloader = NLUDataLoader(evaluation_dataset, batch_size=self.batch_size)
 
+                # Calling on finetuning method which returns a set of trained parameters that can be
+                # now used inference (inference_params)
                 if not dataset_generator.use_few_shot_adaptation:
                     # we are doing zero-shot adaptation so the initial finetuning is always the same
                     if subtask_idx == 0:
@@ -118,7 +120,6 @@ class Evaluator(object):
                     adaptation_batch = next(iter(evaluation_dataloader))
 
                 predictions, eval_loss = inference_method(evaluation_dataloader, **inference_params,
-                                                                                 **eval_task_params,
                                                                                  adaptation_batch=adaptation_batch)
 
                 # For logging of metric

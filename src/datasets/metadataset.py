@@ -341,7 +341,7 @@ class IterableLanguageTaskDataset(object):
 
         # Checking whether the dataset is too small
         assert(len(filtered_subword_to_sample) > self.N),\
-            f"Not enough data to generate N-way k-shot samples for dataset: {self.langauge}"
+            f"Not enough data to generate N-way k-shot samples for dataset: {self.language}"
 
         # sampling mechanism for getting the N classes
         if self.mask_sampling_method == 'random': 

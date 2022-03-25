@@ -152,8 +152,6 @@ class Problyglot(object):
                 # possibly run evaluation of the model
                 if (eval_every_n_iteration and num_task_batches % eval_every_n_iteration == 0):
                     self.evaluator.run(self.learner, num_task_batches=num_task_batches)
-                else:
-                    logger.info("Resuming model training")
 
                 if (num_task_batches % max_task_batch_steps == 0):
                     break
