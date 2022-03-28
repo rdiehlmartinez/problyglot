@@ -181,6 +181,7 @@ class Evaluator(object):
                     'optimizer_state_dict': learner.optimizer.state_dict(),
                 }
                 torch.save(checkpoint, os.path.join(wandb.run.dir, f"checkpoint-{num_task_batches}.pt"))
+                wandb.save(f"checkpoint-{num_task_batches}.pt")
         logger.info("-"*30)
         logger.info("")
 
