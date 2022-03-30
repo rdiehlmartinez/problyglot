@@ -23,13 +23,17 @@ class Problyglot(object):
 
     def __init__(self, config) -> None:
         """ Initialize base model and meta learning method """
+        
+        # config params need to be accessed by several methods
+        self.config = config
+        
+        # whether to log out information to w&b
+        self.use_wandb = config.getboolean('EXPERIMENT', 'use_wandb', fallback=True)
+
         # setting up meta dataset for training if provided in config
         if 'META_DATASET' in config:
             self.meta_dataset = MetaDataset(config)
             self.meta_dataloader = MetaDataLoader(self.meta_dataset)
-
-        # config params need to be accessed by several methods
-        self.config = config
 
         # Setting device 
         self.device = config.get("PROBLYGLOT", "device", fallback=DEFAULT_DEVICE)
@@ -42,8 +46,6 @@ class Problyglot(object):
         # setting learner 
         learner_method = config.get("LEARNER", "method")
         self.learner = self.load_learner(learner_method)
-
-        self.use_wandb = config.getboolean('EXPERIMENT', 'use_wandb', fallback=True)
 
         if self.use_wandb:
             # setting up metrics for logging to wandb
@@ -103,12 +105,26 @@ class Problyglot(object):
 
         return learner
 
-    def train(self) -> None: 
+    def __call__(self) -> None: 
         """ 
         Train the self.base_model via the self.learner training procedure 
         on data stored in self.meta_dataloader
         """
-        logger.info("Beginning model training")
+
+        # Evaluation Mode - will return early
+        if not hasattr(self, "meta_dataset"):
+            logger.info("Running problygot in evaluation mode")
+
+            if not hasattr(self, "evaluator"):
+                logger.warning("No evaluator specified - running problygot is a no-op")
+                return 
+            
+            logger.info("Finished running evaluation model")
+            self.evaluator.run(self.learner)
+            return 
+
+        # Training Mode
+        logger.info("Running problyglot in training mode")
 
         # setting problyglot training configurations
         num_tasks_per_iteration = self.config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
@@ -125,6 +141,11 @@ class Problyglot(object):
         if self.use_wandb:
             wandb.define_metric("train.loss", step_metric="num_task_batches", summary='min')
 
+        if self.config.getboolean("PROBLYGOT", "run_initial_eval", fallback=True):
+            logger.info("Initial evaluation before model training")
+            self.evaluator.run(self.learner, num_task_batches=0)
+
+        logger.info("Starting model training")
         for batch_idx, batch in enumerate(self.meta_dataloader):
             task_name, support_batch, query_batch = batch
             logger.debug(f"\t Training on task idx {batch_idx} - task: {task_name}")

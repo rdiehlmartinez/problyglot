@@ -394,8 +394,6 @@ class Platipus(BaseLearner):
                                                                                params=self.mu_theta)
         else:
             task_classifier_weights = self._initialize_task_classifier_weights(n_classes)
-
-        # TODO: implement task embedding 
         
         # sampling theta after adapting model to query_batch
         mu_theta_query, theta = self.sample_adapted_weights(query_batch, sampling_std=self.log_v_q,
@@ -436,7 +434,9 @@ class Platipus(BaseLearner):
 
     # for NLU classification tasks
 
-    def run_finetuning_classification(self, finetune_dataloader, n_classes, **kwargs): 
+    def run_finetuning_classification(self, finetune_dataloader, n_classes,
+                                                                 max_finetuning_batch_steps=-1,
+                                                                 **kwargs): 
         """
         Creates a copy of the trained model parameters and continues to finetune these 
         parameters on a given dataset. This method assumes that the task that is being 
@@ -447,7 +447,10 @@ class Platipus(BaseLearner):
         Args: 
             * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model is passed
                 in as a dataloader (in most cases this will be an NLUDataloader)
-            * n_classes (int): the number of classes to classify over
+            * n_classes (int): The number of classes to classify over
+            * max_finetuning_batch_steps (int): Optional maximum number of batch steps to take 
+                for model finetuning 
+
 
         Returns:
             * inference_params dict containing: 
@@ -457,27 +460,36 @@ class Platipus(BaseLearner):
         """
 
         # task classifier weights are initialized randomly
-        task_classifier_weights = self._initialize_task_classifier_weights(n_classes,
-                                                                           init_method_override="random")
+        adaptation_batch = move_to_device(next(iter(finetune_dataloader)), self.device)
+        sampled_task_classifier_weights = self._initialize_task_classifier_weights(n_classes,
+                                                                                data_batch=adaptation_batch,
+                                                                                params=self.mu_theta,
+                                                                                init_method_override='random'
+                                                                                )
 
         # sampling weights from mu_theta using the first batch of data 
-        adaptation_batch = move_to_device(next(iter(finetune_dataloader)), self.device)
-        finetuned_theta = self.sample_adapted_weights(adaptation_batch,
+        sampled_theta = self.sample_adapted_weights(adaptation_batch,
                                                         sampling_std=self.log_sigma_theta,
                                                         params=self.mu_theta,
-                                                        task_classifier_weights=task_classifier_weights,
+                                                        task_classifier_weights=sampled_task_classifier_weights,
                                                         learning_rate=self.gamma_p,
                                                         clone_params=True,
                                                         evaluation_mode=True)
 
         # detaching parameters from original computation graph to create new leaf variables
-        detached_finetuned_theta = []
-        for p in finetuned_theta:
+        finetuned_theta = []
+        for p in sampled_theta:
             detached_p = p.detach()
             detached_p.requires_grad = p.requires_grad
-            detached_finetuned_theta.append(detached_p)
-        
-        finetune_params = itertools.chain(detached_finetuned_theta, *task_classifier_weights.values())
+            finetuned_theta.append(detached_p)
+
+        finetuned_task_classifier_weights = {}
+        for k, p in sampled_task_classifier_weights.items():
+            detached_p = p.detach()
+            detached_p.requires_grad = True
+            finetuned_task_classifier_weights[k] = detached_p
+
+        finetune_params = itertools.chain(finetuned_theta, finetuned_task_classifier_weights.values())
         finetune_optimizer = torch.optim.Adam(params=finetune_params)
 
         for batch_idx, data_batch in enumerate(finetune_dataloader):
@@ -485,15 +497,18 @@ class Platipus(BaseLearner):
             finetune_optimizer.zero_grad()
 
             # run SGD on the finetuned theta parameters
-            _, ce_loss = self._run_forward_pass(data_batch, params=detached_finetuned_theta,
-                                                            task_classifier_weights=task_classifier_weights)
+            _, ce_loss = self._run_forward_pass(data_batch, params=finetuned_theta,
+                                                            task_classifier_weights=finetuned_task_classifier_weights)
 
             ce_loss.backward()
             finetune_optimizer.step()
 
+            if max_finetuning_batch_steps > 0 and (batch_idx + 1) >= max_finetuning_batch_steps:
+                break
+
         inference_params = {
-            "finetuned_params": finetuned_theta,
-            "task_classifier_weights": task_classifier_weights
+            "finetuned_params": finetuned_theta, 
+            "task_classifier_weights": finetuned_task_classifier_weights
         }
 
         return inference_params

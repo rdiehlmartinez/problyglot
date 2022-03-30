@@ -39,6 +39,11 @@ class Evaluator(object):
 
         self.batch_size = config.getint("EVALUATION", "batch_size", fallback=32)
 
+        # maximum number of bathes to finetune model on 
+        self.max_finetuning_batch_steps = config.getint("EVALUATION", "max_finetuning_batch_steps", fallback=-1)
+        assert(self.max_finetuning_batch_steps != 0),\
+            "max_finetuning_batch_steps must either be -1 or >1"
+
         self.save_checkpoints = config.getboolean("EVALUATION", "save_checkpoints", fallback=False)
         # possibly track of previous runs of the evaluator for checkpoint purposes
         if self.save_checkpoints:
@@ -81,6 +86,7 @@ class Evaluator(object):
             logger.info(f"(Task {idx}) Running evaluation task: {eval_task}")
 
             eval_task_params = TASK_EVALUATION_PARAMS[eval_task]
+            eval_task_params['max_finetuning_batch_steps'] = self.max_finetuning_batch_steps
             eval_task_type = eval_task_params['task_type']
 
             dataset_generator = self.dataset_generators[eval_task]
