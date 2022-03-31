@@ -2,20 +2,18 @@ __author__ = 'Richard Diehl Martinez'
 """
 Implementation of the platipus model, proposed by Finn et el. https://arxiv.org/pdf/1806.02817.pdf
 
-Implementation is adapted from the open-source repo: 
-https://github.com/cnguyen10/few_shot_meta_learning/blob/2b075a5e5de4f81670ae8340e87acfc4d5e9bbc3/Platipus.py#L28
+Implementation is adapted from the open-source project: 
+https://github.com/cnguyen10/few_shot_meta_learning
 """
 
 import typing
 import higher 
 import logging
 import itertools
-import math
 from collections import OrderedDict
 
 import torch
 import torch.nn.functional as F 
-from torch.utils.tensorboard import SummaryWriter
 
 from .base import BaseLearner
 from ..utils.modeling import kl_divergence_gaussians
@@ -41,25 +39,30 @@ class Platipus(BaseLearner):
         """
         Platipus implements a type of BaseLearner.
 
-        Reads in a base model and converts the model into a functional 'state-less' version of the model, using 
-        the higher library. Platipus requires tracking meta parameters that represent the mean and 
-        standard deviations of the weights that are to-be meta-learned. These meta parameters are stored 
-        as internal attributes of platipus, and are learned via an optimizer of type (optimizer_type). The main
-        logic of platipus is in the run_inner_loop() and run_evaluation() methods which implement the training 
+        Reads in a base model and converts the model into a functional 'state-less' version
+        of the model, using  the higher library. Platipus requires tracking meta parameters that
+        represent the mean and standard deviations of the weights that are to-be meta-learned.
+        These meta parameters are stored  as internal attributes of platipus, and are learned via
+        an optimizer of type (optimizer_type). The main logic of platipus is in the
+        run_inner_loop() and finetuning/evaluation methods which implement the training 
         and inference steps of platipus. 
 
         Args: 
             * base_model (implementation of BaseModel)
-            * optimizer_type (str) : the type of the optimizer (defaults to 'adam')
-            * meta_lr (float): learning rate for the outer loop meta learning step (defaults to 0.01)
-            * kl_weight (float): trade-off hyper-parameter between the CE term and the KL term of the ELBO
+            * optimizer_type (str) : the type of the optimizer 
+            * meta_lr (float): learning rate for the outer loop meta learning step
+            * kl_weight (float): trade-off hyper-parameter between the CE term and the KL term of
+                the ELBO objective 
             * num_inner_steps (int): number of gradients steps in the inner looop
-            * use_first_order (bool): whether a first order approximation of higher-order gradients should be used (defaults to False)
-            * task_embedding_method (str): how to represent the task embedding that is used to condition the task-dependent 
-                probability distribution from which we sample weights for a given task (defaults to 'val_grad'). 'Val_grad' is the 
-                implicit method used in the platipus paper. 
-            * task_cls_init_method (str): how to initialize the final task classifier layer (either 'random' or 'protomaml'). 
-            * device (str): what device to use for training (either 'cpu' or 'gpu) - defaults to 'cpu'
+            * use_first_order (bool): whether a first order approximation of higher-order gradients
+                should be used (defaults to False)
+            * task_embedding_method (str): how to represent the task embedding that is used to
+                condition the task-dependent probability distribution from which we sample weights
+                for a given task (defaults to 'val_grad'). 'Val_grad' is the implicit method used
+                in the platipus paper. 
+            * task_cls_init_method (str): how to initialize the final task classifier layer
+                (either 'random' or 'protomaml'). 
+            * device (str): what device to use for training (either 'cpu' or 'gpu) 
 
         """
 
@@ -82,17 +85,27 @@ class Platipus(BaseLearner):
         self.log_sigma_theta = torch.nn.ParameterList()
         self.log_v_q = torch.nn.ParameterList()
         for param in base_model.parameters():
-            self.mu_theta.append(param) # global mean parameters initialized as the weights of the base model
-            self.log_sigma_theta.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device) - 4, requires_grad=param.requires_grad))
-            self.log_v_q.append(torch.nn.Parameter(data=torch.randn(size=param.shape).to(self.device) - 4, requires_grad=param.requires_grad))
+            self.mu_theta.append(param) # mean parameters initialized to weights of base model
+            self.log_sigma_theta.append(torch.nn.Parameter(
+                                            data=torch.randn(size=param.shape).to(self.device) - 4,
+                                            requires_grad=param.requires_grad)
+                                        )
+            self.log_v_q.append(torch.nn.Parameter(
+                                    data=torch.randn(size=param.shape).to(self.device) - 4,
+                                    requires_grad=param.requires_grad)
+                                )
 
         self.gamma_p = torch.nn.Parameter(data=torch.tensor(float(gamma_p)).to(self.device))
         self.gamma_q = torch.nn.Parameter(data=torch.tensor(float(gamma_q)).to(self.device))
 
         self.inner_lr = torch.nn.Parameter(data=torch.tensor(float(inner_lr)).to(self.device))
-        self.classifier_lr = torch.nn.Parameter(data=torch.tensor(float(classifier_lr)).to(self.device))
+        self.classifier_lr = torch.nn.Parameter(data=torch.tensor(float(classifier_lr))\
+                                .to(self.device))
 
-        self.all_meta_params = itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr])
+        self.all_meta_params = itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q,
+                                               [self.gamma_p, self.gamma_q,
+                                                self.inner_lr, self.classifier_lr]
+                                              )
 
         # loading in meta optimizer 
         self.meta_lr = float(meta_lr)
@@ -120,8 +133,9 @@ class Platipus(BaseLearner):
 
         self.task_cls_init_method = task_cls_init_method
 
-    # Overriding nn.Module functionality 
+    ###### Helper functions ######
 
+    # Overriding nn.Module functionality 
     def state_dict(self):
         """ Overriding method to remove placeholder parameters from functional model"""
         original_state_dict = super().state_dict()
@@ -135,7 +149,6 @@ class Platipus(BaseLearner):
         
         return updated_state_dict
 
-    # Helper functions
 
     def _run_forward_pass(self, data_batch, params, task_classifier_weights):
         """ 
@@ -149,7 +162,7 @@ class Platipus(BaseLearner):
                 _initialize_task_classifier_weights for explanation of dict values
 
         Returns:
-            * logits ([torch.Tensor]): Logits resulting from forawrd pass 
+            * logits ([torch.Tensor]): Logits resulting from forward pass 
             * loss (int): Loss of data 
         """
 
@@ -163,7 +176,8 @@ class Platipus(BaseLearner):
 
         # indexing into sequence layer of last_hidden state -> (batch_size, hidden_size) 
         batch_size = last_hidden_state.size(0)
-        last_hidden_state = last_hidden_state[torch.arange(batch_size), data_batch['input_target_idx']]
+        last_hidden_state = last_hidden_state[torch.arange(batch_size),
+                                              data_batch['input_target_idx']]
 
         # (batch_size, num_classes) 
         logits = F.linear(last_hidden_state, **task_classifier_weights)
@@ -171,79 +185,34 @@ class Platipus(BaseLearner):
 
         return (logits, loss)
 
-
-    def _initialize_task_classifier_weights(self, n_classes, data_batch=None,
-                                                             params=None,
-                                                             init_method_override=""):
+    def get_task_init_kwargs(self, data_batch=None, **kwargs):
         """ 
-        Helper method for initializing the weight and bias layer of the final classification layer
-        to classify n_classes number of classes for the current task. Methods for initializing 
-        the task classifier weights can either be random or conditioned on some data_batch passed in
-        (in the style of protomaml).
+        Overrides the parent's method to also include kwargs for protomaml
 
-        Args: 
-            * n_classes (int): Number of classes 
-            * data_batch (dict): Batch of data for a forward pass through the model 
-                (see run_inner_loop for information on the data structure).
-                Only needs to be passed in if method is protomaml. 
-            * params ([torch.Tensor]): List of tensor weights storing the model weights.
-                Only needs to be passed in if method is protomaml.
-            * init_method_override (str): (optional) passed in to override 
-                the value of self.task_cls_init_method
-        Returns: 
-            * task_classifier_weights (dict): {
-                * weight -> (torch.Tensor): classification weight matrix
-                * bias -> (torch.Tensor): classification bias vector
-                }
+        Returns:
+            * init_kwargs (dict): Keyword arguments used by the initialization function 
         """
-        if init_method_override:
-            task_cls_init_method = init_method_override
-        else: 
-            task_cls_init_method = self.task_cls_init_method
+        init_kwargs = super().get_task_init_kwargs(**kwargs)
+        
+        if self.task_cls_init_method == 'protomaml':
+            assert(data_batch is not None),\
+                "Use of protomaml as a classification head initializer requires a data_batch"
 
-        if task_cls_init_method == 'random':
-            # Xavier normal weight implementation
-            std_weight = math.sqrt(2.0 / float(self.base_model_hidden_dim + n_classes))
-            std_bias = math.sqrt(2.0 / float(n_classes))
+            init_kwargs['functional_model'] = self.functional_model
+            init_kwargs['params'] = self.mu_theta
+            init_kwargs['data_batch'] = data_batch
 
-            # weights need to be shape (out_features, in_features) to be compatible with functional linear
-            classifier_weight = torch.randn((n_classes, self.base_model_hidden_dim), device=self.device) * std_weight
-            classifier_bias = torch.randn((n_classes), device=self.device) * std_bias
-        elif task_cls_init_method == 'protomaml':
-            assert(data_batch is not None), "protomaml method requires data_batch to be passed in"
-            outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
-                                                    attention_mask=data_batch['attention_mask'],
-                                                    params=[p for p in params])
-
-            # last_hidden_state has form (batch_size, sequence_length, hidden_size);
-            last_hidden_state = outputs.last_hidden_state
-            batch_size = last_hidden_state.size(0)
-            last_hidden_state = last_hidden_state[torch.arange(batch_size), data_batch['input_target_idx']]
-
-            prototypes = torch.zeros((n_classes, self.base_model_hidden_dim), device=self.device)
-
-            for c in range(n_classes):
-                idx = torch.nonzero(data_batch['label_ids'] == c).squeeze()
-                if idx.nelement() != 0:
-                    prototypes[c] = torch.mean(last_hidden_state[idx], dim=0)
-                else:
-                    logger.warning("ProtoMaml weight initialization missing at least one class")
-
-            classifier_weight = 2 * prototypes
-            classifier_bias = -torch.norm(prototypes, dim=1)**2
-        else:
-            raise NotImplementedError(f"Task classification weight initialization method: {self.task_cls_init_method} not supported")
-
-        task_classifier_weights = { 
-            "weight": classifier_weight,
-            "bias": classifier_bias
-        }
-
-        return task_classifier_weights
+        return init_kwargs
         
     ###### Model adaptation methods ######
 
-    def sample_adapted_weights(self, data_batch, sampling_std, return_adapted_mean=False, **adaptation_kwargs): 
+    """
+    Platipus relies on these methods to adapt and sample from the weight distributions 
+    that it meta-learned. 
+    """
+
+    def _sample_adapted_weights(self, data_batch, sampling_std, return_adapted_mean=False,
+                                **adaptation_kwargs): 
         """ 
         Helper method for sampling model weights that have been adapted to a batch of 
         data. 
@@ -253,25 +222,26 @@ class Platipus(BaseLearner):
                 (see run_inner_loop for information on the data structure)
             * sampling_std ([torch.Tensor]): The standard deviation to be used for sampling weights
                 for each weight that is to-be meta-learned
-            * return_adapted_mean (bool): Whether to also return the means from the adapted distribution 
-                over weights (defaults to False)
+            * return_adapted_mean (bool): Whether to also return the means from the adapted
+                distribution over weights (defaults to False)
             * adaptation_kwargs: Kerword arguments to be passed into adapt_params_classification 
                 (see this method for more information) 
         Returns: 
-            * adapted_params ([torch.Tensor]): Adapted means of the weight distribution (only returned 
-                if return_adapted_mean is set to True)
+            * adapted_params ([torch.Tensor]): Adapted means of the weight distribution
+                (only returned if return_adapted_mean is set to True)
             * sampled_weights ([torch.Tensor]): The generated list of tensor weights sampled 
                 from the model 
         """
 
-        adapted_params = self.adapt_params_classification(data_batch, **adaptation_kwargs)
+        adapted_params = self._adapt_params_classification(data_batch, **adaptation_kwargs)
 
         sampled_weights = [None] * len(adapted_params) 
 
         for i in range(len(sampled_weights)):
             if adapted_params[i].requires_grad: 
                 sampled_weights[i] = adapted_params[i] + \
-                    torch.randn_like(input=adapted_params[i], device=self.device) * torch.exp(input=sampling_std[i])
+                    torch.randn_like(input=adapted_params[i], device=self.device) *\
+                        torch.exp(input=sampling_std[i])
             else: 
                 sampled_weights[i] = self.mu_theta[i]
 
@@ -280,37 +250,38 @@ class Platipus(BaseLearner):
         else: 
             return sampled_weights  
 
-    # for adapting to classificationt tasks (e.g. the meta-training task is a classification task)
-    def adapt_params_classification(self, data_batch, params, task_classifier_weights, learning_rate, 
-                                                                                       optimize_classifier=False,
-                                                                                       clone_params=True,
-                                                                                       evaluation_mode=False,):
+    # adaptation to classification tasks (e.g. the meta-training task is a classification task)
+    def _adapt_params_classification(self, data_batch, params, task_classifier_weights,
+                                     learning_rate, optimize_classifier=False, clone_params=True,
+                                     evaluation_mode=False):
         """ 
         Adapted from: 
-        https://github.com/cnguyen10/few_shot_meta_learning/blob/2b075a5e5de4f81670ae8340e87acfc4d5e9bbc3/Platipus.py#L28
+        https://github.com/cnguyen10/few_shot_meta_learning
 
-        For a given batch of inputs and labels, we compute the loss of the functional model where the parameters of the 
-        model are overriden to be params. Note that this is the main reason that in __init__ we convert the base model
-        to a functional version of the model that can take in its parameters as an argument (as opposed to these 
-        parameters being stored in the model's state). 
+        For a given batch of inputs and labels, we compute the loss of the functional model where
+        the parameters of the model are overriden to be params. Note that this is the main reason
+        that in __init__ we convert the base model to a functional version of the model that can
+        take in its parameters as an argument (as opposed to these  parameters being stored in the
+        model's state). 
 
         The parameters are then updated using SGD with a given learning rate, and returned. 
 
         Params:
             * data_batch (dict): Batch of data for a forward pass through the model 
                 (see run_inner_loop for information on the data structure)
-            * params (iterable): Iterable of torch.nn.Paramater()s (the params that we want to evaluate our model at)
-            * task_classifier_weights (dict):  The final classification layer which is not meta-learned 
-                See _initialize_task_classifier_weights for a discription of the dict structure
+            * params (iterable): Iterable of torch.nn.Paramater()s
+                (the params that we want to evaluate our model at)
+            * task_classifier_weights (dict): The final classification layer that is not
+                meta-learned 
             * learning_rate (float): The internal learning rate used to update params
-            * optimize_classifier (bool): Whether to update the the final classification layer - this layer is not meta-learned
-                (defaults to False)
+            * optimize_classifier (bool): Whether to train the final classification layer. 
             * clone_params (bool): Whether to clone the params passed in (defaults to True)
-            * evaluation_mode (bool): Whether running this method during evaluation (either in finetuning or inference) (defaults to False)
+            * evaluation_mode (bool): Whether running this method during evaluation
+                (either in finetuning or inference) (defaults to False)
 
         Returns: 
-            * adapted_params (iterable): Iterable of torch.nn.Paramater()s that represent the updated the parameters 
-                after running SGD 
+            * adapted_params (iterable): Iterable of torch.nn.Paramater()s that represent the
+                updated the parameters after running SGD 
         """                                        
 
         if clone_params:
@@ -321,8 +292,9 @@ class Platipus(BaseLearner):
 
         for _ in range(self.num_inner_steps):
 
-            logits, loss = self._run_forward_pass(data_batch, params=adapted_params, 
-                                                              task_classifier_weights=task_classifier_weights)
+            _, loss = self._run_forward_pass(data_batch,
+                                             params=adapted_params, 
+                                             task_classifier_weights=task_classifier_weights)
 
             grad_params = [p for p in adapted_params if p.requires_grad]
 
@@ -354,32 +326,29 @@ class Platipus(BaseLearner):
                     inputs=[task_classifier_weights["weight"], task_classifier_weights["bias"]],
                 )
 
-                task_classifier_weights["weight"] = task_classifier_weights["weight"] - self.classifier_lr * classifier_grads[0]
-                task_classifier_weights["bias"] =  task_classifier_weights["bias"] - self.classifier_lr * classifier_grads[1]
+                task_classifier_weights["weight"] = task_classifier_weights["weight"] -\
+                                                        self.classifier_lr * classifier_grads[0]
+                task_classifier_weights["bias"] =  task_classifier_weights["bias"] -\
+                                                        self.classifier_lr * classifier_grads[1]
 
         return adapted_params
 
 
     ###### Model training methods ######
 
-    def optimizer_step(self, set_zero_grad=True):
-        """ Take a global update step of self.params; optionally set gradients back to 0"""
-        self.optimizer.step()
-        if set_zero_grad:
-            self.optimizer.zero_grad()
-
     def run_inner_loop(self, support_batch, query_batch, *args, **kwargs): 
         """
-        Implements steps 6-11 outlined in the algorithm 1 of the Platipus paper https://arxiv.org/pdf/1806.02817.pdf, 
-        i.e. the inner loop optimization step of the platipus algorithm.
+        Implements steps 6-11 outlined in the algorithm 1 of the Platipus paper
+        https://arxiv.org/pdf/1806.02817.pdf, i.e. the inner loop optimization step.
         
         Args: 
             * support_batch: a dictionary containing the following information for the support set
                 * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
-                * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
-                    the final classification layer 
+                * input_target_idx (torch.tensor): Tensor indicating for each sample at what index
+                    we apply the final classification layer 
                 * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
-                * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are not pad tokens
+                * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are
+                    not pad tokens
             * query_batch: same as support_batch, but for the data of the query set 
 
         Returns: 
@@ -388,42 +357,49 @@ class Platipus(BaseLearner):
         # automatically infer the number N of classes
         n_classes = torch.unique(support_batch['label_ids']).numel()
 
-        if self.task_cls_init_method == 'protomaml':
-            task_classifier_weights = self._initialize_task_classifier_weights(n_classes,
-                                                                               data_batch=support_batch,
-                                                                               params=self.mu_theta)
-        else:
-            task_classifier_weights = self._initialize_task_classifier_weights(n_classes)
-        
+        task_init_data_batch = support_batch if self.task_cls_init_method == 'protomaml' else None
+        init_kwargs = self.get_task_init_kwargs(n_classes=n_classes,
+                                                data_batch=task_init_data_batch)
+       
+        task_classifier_weights = self.initialize_task_head(task_type='classification',
+                                                            method=self.task_cls_init_method,
+                                                            init_kwargs=init_kwargs)
+
         # sampling theta after adapting model to query_batch
-        mu_theta_query, theta = self.sample_adapted_weights(query_batch, sampling_std=self.log_v_q,
-                                                                         return_adapted_mean=True,
-                                                                         params=self.mu_theta,
-                                                                         task_classifier_weights=task_classifier_weights,
-                                                                         learning_rate=self.gamma_q,
-                                                                         clone_params=True)
+        mu_theta_query, theta = self._sample_adapted_weights(query_batch, 
+                                                             sampling_std=self.log_v_q,
+                                                             return_adapted_mean=True,
+                                                             params=self.mu_theta,
+                                                             task_classifier_weights=\
+                                                                task_classifier_weights,
+                                                             learning_rate=self.gamma_q,
+                                                             clone_params=True)
 
         # adapting theta to the support set -> adapted params are phi
-        phi = self.adapt_params_classification(support_batch, 
-                                               params=theta, 
-                                               task_classifier_weights=task_classifier_weights,
-                                               learning_rate=self.inner_lr,
-                                               clone_params=False,
-                                               optimize_classifier=True)
+        phi = self._adapt_params_classification(support_batch, 
+                                                params=theta, 
+                                                task_classifier_weights=task_classifier_weights,
+                                                learning_rate=self.inner_lr,
+                                                clone_params=False,
+                                                optimize_classifier=True)
 
         # evaluating on the query batch using the adapted params phi  
-        logits, ce_loss = self._run_forward_pass(query_batch, params=phi, task_classifier_weights=task_classifier_weights)
+        _, ce_loss = self._run_forward_pass(query_batch,
+                                            params=phi,
+                                            task_classifier_weights=task_classifier_weights)
 
         # computing KL loss (requires adapting mu_theta to the support set)
         
         # mu theta adapted to the support set (line 10 from algorithm 1) 
-        mu_theta_support = self.adapt_params_classification(support_batch, 
-                                                            params=self.mu_theta,
-                                                            task_classifier_weights=task_classifier_weights,
-                                                            learning_rate=self.gamma_p,
-                                                            clone_params=True)
+        mu_theta_support = self._adapt_params_classification(support_batch, 
+                                                             params=self.mu_theta,
+                                                             task_classifier_weights=\
+                                                                task_classifier_weights,
+                                                             learning_rate=self.gamma_p,
+                                                             clone_params=True)
 
-        kl_loss = kl_divergence_gaussians(p=[*mu_theta_query, *self.log_v_q], q=[*mu_theta_support, *self.log_sigma_theta])
+        kl_loss = kl_divergence_gaussians(p=[*mu_theta_query, *self.log_v_q],
+                                          q=[*mu_theta_support, *self.log_sigma_theta])
 
         loss = ce_loss + self.kl_weight * kl_loss
 
@@ -435,8 +411,7 @@ class Platipus(BaseLearner):
     # for NLU classification tasks
 
     def run_finetuning_classification(self, finetune_dataloader, n_classes,
-                                                                 max_finetuning_batch_steps=-1,
-                                                                 **kwargs): 
+                                      max_finetuning_batch_steps=-1, **kwargs): 
         """
         Creates a copy of the trained model parameters and continues to finetune these 
         parameters on a given dataset. This method assumes that the task that is being 
@@ -445,8 +420,8 @@ class Platipus(BaseLearner):
         https://arxiv.org/pdf/1806.02817.pdf for meta-testing.
         
         Args: 
-            * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model is passed
-                in as a dataloader (in most cases this will be an NLUDataloader)
+            * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model
+                is passed in as a dataloader (in most cases this will be an NLUDataloader)
             * n_classes (int): The number of classes to classify over
             * max_finetuning_batch_steps (int): Optional maximum number of batch steps to take 
                 for model finetuning 
@@ -461,20 +436,23 @@ class Platipus(BaseLearner):
 
         # task classifier weights are initialized randomly
         adaptation_batch = move_to_device(next(iter(finetune_dataloader)), self.device)
-        sampled_task_classifier_weights = self._initialize_task_classifier_weights(n_classes,
-                                                                                data_batch=adaptation_batch,
-                                                                                params=self.mu_theta,
-                                                                                init_method_override='random'
-                                                                                )
+
+        task_init_data_batch = support_batch if self.task_cls_init_method == 'protomaml' else None
+        init_kwargs = self.get_task_init_kwargs(data_batch=task_init_data_batch)
+       
+        task_classifier_weights = self.initialize_task_head(task_type='classification',
+                                                            method=self.task_cls_init_method,
+                                                            init_kwargs=init_kwargs)
 
         # sampling weights from mu_theta using the first batch of data 
-        sampled_theta = self.sample_adapted_weights(adaptation_batch,
-                                                        sampling_std=self.log_sigma_theta,
-                                                        params=self.mu_theta,
-                                                        task_classifier_weights=sampled_task_classifier_weights,
-                                                        learning_rate=self.gamma_p,
-                                                        clone_params=True,
-                                                        evaluation_mode=True)
+        sampled_theta = self._sample_adapted_weights(adaptation_batch,
+                                                     sampling_std=self.log_sigma_theta,
+                                                     params=self.mu_theta,
+                                                     task_classifier_weights=\
+                                                        task_classifier_weights,
+                                                     learning_rate=self.gamma_p,
+                                                     clone_params=True,
+                                                     evaluation_mode=True)
 
         # detaching parameters from original computation graph to create new leaf variables
         finetuned_theta = []
@@ -484,12 +462,13 @@ class Platipus(BaseLearner):
             finetuned_theta.append(detached_p)
 
         finetuned_task_classifier_weights = {}
-        for k, p in sampled_task_classifier_weights.items():
+        for k, p in task_classifier_weights.items():
             detached_p = p.detach()
             detached_p.requires_grad = True
             finetuned_task_classifier_weights[k] = detached_p
 
-        finetune_params = itertools.chain(finetuned_theta, finetuned_task_classifier_weights.values())
+        finetune_params = itertools.chain(finetuned_theta,
+                                          finetuned_task_classifier_weights.values())
         finetune_optimizer = torch.optim.Adam(params=finetune_params)
 
         for batch_idx, data_batch in enumerate(finetune_dataloader):
@@ -497,8 +476,10 @@ class Platipus(BaseLearner):
             finetune_optimizer.zero_grad()
 
             # run SGD on the finetuned theta parameters
-            _, ce_loss = self._run_forward_pass(data_batch, params=finetuned_theta,
-                                                            task_classifier_weights=finetuned_task_classifier_weights)
+            _, ce_loss = self._run_forward_pass(data_batch, 
+                                                params=finetuned_theta,
+                                                task_classifier_weights=\
+                                                    finetuned_task_classifier_weights)
 
             ce_loss.backward()
             finetune_optimizer.step()
@@ -515,9 +496,7 @@ class Platipus(BaseLearner):
 
 
     def run_inference_classification(self, inference_dataloader, finetuned_params, 
-                                                                 task_classifier_weights,
-                                                                 adaptation_batch=None, 
-                                                                 **kwargs):
+                                     task_classifier_weights, adaptation_batch=None, **kwargs):
         """ 
         This method is to be called after the run_finetuning_classification. 
         
@@ -546,12 +525,14 @@ class Platipus(BaseLearner):
                 # if adaptation_batch is passed in, we adapt the model's parameters to this data
                 adaptation_batch = move_to_device(adaptation_batch, self.device)
 
-                finetuned_params = self.sample_adapted_weights(adaptation_batch, sampling_std=self.log_sigma_theta,
-                                                                                 params=finetuned_params,
-                                                                                 task_classifier_weights=task_classifier_weights,
-                                                                                 learning_rate=self.gamma_p,
-                                                                                 clone_params=True,
-                                                                                 evaluation_mode=True)
+                finetuned_params = self._sample_adapted_weights(adaptation_batch, 
+                                                                sampling_std=self.log_sigma_theta,
+                                                                params=finetuned_params,
+                                                                task_classifier_weights=\
+                                                                    task_classifier_weights,
+                                                                learning_rate=self.gamma_p,
+                                                                clone_params=True,
+                                                                evaluation_mode=True)
         
         predictions = []
         total_loss = 0.0
@@ -562,8 +543,10 @@ class Platipus(BaseLearner):
             for data_batch in inference_dataloader: 
                 data_batch = move_to_device(data_batch, self.device)
 
-                logits, loss = self._run_forward_pass(data_batch, params=finetuned_params, 
-                                                                  task_classifier_weights=task_classifier_weights)
+                logits, loss = self._run_forward_pass(data_batch, 
+                                                      params=finetuned_params, 
+                                                      task_classifier_weights=\
+                                                        task_classifier_weights)
 
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
 
@@ -576,3 +559,52 @@ class Platipus(BaseLearner):
         return (predictions, total_loss)
 
 
+# Registering new task head initialization method 
+@BaseLearner.register_initialization_method
+def classification_protomaml(base_model_hidden_dim, n_classes, functional_model, params,
+                                data_batch, device, **kwargs):
+    """
+    Args: 
+        * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
+        * n_classes (int): Number of classes to classify over 
+        * functional_model (higher.MonkeyPatched): The 'functionalized' version of the 
+            base model
+        * params ([torch.Tensor]): List of tensor weights storing the model weights.
+        * data_batch (dict): Batch of data for a forward pass through the model 
+            (see run_inner_loop for information on the data structure).
+        * device (str): Device type ('cuda' or 'cpu')
+    Returns: 
+        * task_classifier_weights (dict): {
+            * weight -> (torch.Tensor): classification weight matrix
+            * bias -> (torch.Tensor): classification bias vector
+            }
+    """
+
+    outputs = functional_model.forward(input_ids=data_batch['input_ids'],
+                                        attention_mask=data_batch['attention_mask'],
+                                        params=[p for p in params])
+
+    # last_hidden_state has form (batch_size, sequence_length, hidden_size);
+    last_hidden_state = outputs.last_hidden_state
+    batch_size = last_hidden_state.size(0)
+    last_hidden_state = last_hidden_state[torch.arange(batch_size),
+                                            data_batch['input_target_idx']]
+
+    prototypes = torch.zeros((n_classes, base_model_hidden_dim), device=device)
+
+    for c in range(n_classes):
+        idx = torch.nonzero(data_batch['label_ids'] == c).squeeze()
+        if idx.nelement() != 0:
+            prototypes[c] = torch.mean(last_hidden_state[idx], dim=0)
+        else:
+            logger.warning("ProtoMaml weight initialization missing at least one class")
+
+    classifier_weight = 2 * prototypes
+    classifier_bias = -torch.norm(prototypes, dim=1)**2
+
+    task_classifier_weights = { 
+        "weight": classifier_weight,
+        "bias": classifier_bias
+    }
+
+    return task_classifier_weights
