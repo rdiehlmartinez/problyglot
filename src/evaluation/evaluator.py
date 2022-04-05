@@ -40,7 +40,8 @@ class Evaluator(object):
         self.batch_size = config.getint("EVALUATION", "batch_size", fallback=32)
 
         # maximum number of bathes to finetune model on 
-        self.max_finetuning_batch_steps = config.getint("EVALUATION", "max_finetuning_batch_steps", fallback=-1)
+        self.max_finetuning_batch_steps = config.getint("EVALUATION", "max_finetuning_batch_steps",
+                                                        fallback=-1)
         assert(self.max_finetuning_batch_steps != 0),\
             "max_finetuning_batch_steps must either be -1 or >1"
 
@@ -108,13 +109,15 @@ class Evaluator(object):
                 evaluation_language = evaluation_dataset.language
                 logger.info(f"\t Finetuning on language: {finetune_language} - evaluating on language: {evaluation_language}")
 
-                finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=self.batch_size)
-                evaluation_dataloader = NLUDataLoader(evaluation_dataset, batch_size=self.batch_size)
+                finetune_dataloader = NLUDataLoader(finetune_dataset,
+                                                    batch_size=self.batch_size)
+                evaluation_dataloader = NLUDataLoader(evaluation_dataset,
+                                                      batch_size=self.batch_size)
 
-                # Calling on finetuning method which returns a set of trained parameters that can be
-                # now used inference (inference_params)
+                # Calling on finetuning method which returns a set of trained parameters that 
+                # can be used for inference (inference_params)
                 if not dataset_generator.use_few_shot_adaptation:
-                    # we are doing zero-shot adaptation so the initial finetuning is always the same
+                    # we are doing zero-shot adaptation --> initial finetuning is always the same
                     if subtask_idx == 0:
                         inference_params = finetune_method(finetune_dataloader, **eval_task_params)
                 else:
@@ -122,16 +125,22 @@ class Evaluator(object):
 
                 adaptation_batch = None
                 if dataset_generator.adapt_on_eval:
-                    # adapt on the first batch of the evaluation datalaoder
-                    adaptation_batch = next(iter(evaluation_dataloader))
+                    if type(learner).__name__ != "Platipus":
+                        logger.warning("(ignoring adapt_on_eval) - learner is not 'platipus'")
+                    else:    
+                        # adapt on the first batch of the evaluation datalaoder
+                        adaptation_batch = next(iter(evaluation_dataloader))
 
-                predictions, eval_loss = inference_method(evaluation_dataloader, **inference_params,
-                                                                                 adaptation_batch=adaptation_batch)
+                predictions, eval_loss = inference_method(evaluation_dataloader,
+                                                          adaptation_batch=adaptation_batch,
+                                                          **inference_params)
 
                 # For logging of metric
                 if self.use_wandb:
-                    wandb.define_metric(f"{eval_task}.{evaluation_language}.{metric_name}", step_metric="num_task_batches", summary=metric_summary)
-                    wandb.define_metric(f"{eval_task}.{evaluation_language}.loss", step_metric="num_task_batches", summary='min')
+                    wandb.define_metric(f"{eval_task}.{evaluation_language}.{metric_name}",
+                                        step_metric="num_task_batches", summary=metric_summary)
+                    wandb.define_metric(f"{eval_task}.{evaluation_language}.loss",
+                                        step_metric="num_task_batches", summary='min')
 
                 # compute metrics using predictions 
                 metric = compute_metric(predictions, evaluation_dataloader)
@@ -153,8 +162,10 @@ class Evaluator(object):
             eval_task_loss_mean = sum(eval_task_losses)/len(eval_task_losses)
 
             if self.use_wandb:
-                wandb.define_metric(f"{eval_task}.{metric_name}", step_metric="num_task_batches", summary=metric_summary)
-                wandb.define_metric(f"{eval_task}.loss", step_metric="num_task_batches", summary='min')
+                wandb.define_metric(f"{eval_task}.{metric_name}", step_metric="num_task_batches",
+                                    summary=metric_summary)
+                wandb.define_metric(f"{eval_task}.loss", step_metric="num_task_batches",
+                                    summary='min')
 
                 wandb.log({eval_task: {
                             "loss": eval_task_loss_mean,
@@ -163,7 +174,8 @@ class Evaluator(object):
                         "num_task_batches": num_task_batches
                         })
 
-            logger.info(f"\t (Task {idx}) Avg. {metric_name}: {eval_task_metrics_mean:.4f} Avg Loss: {eval_task_loss_mean:.4f}")
+            logger.info(f"\t (Task {idx}) Avg. {metric_name}: {eval_task_metrics_mean:.4f}")
+            logger.info(f"\t (Task {idx}) Avg Loss: {eval_task_loss_mean:.4f}")
 
             # Possibly writing out checkpoint 
             if self.save_checkpoints:
@@ -171,7 +183,8 @@ class Evaluator(object):
 
                 best_function = max if metric_summary == 'max' else min
 
-                if best_function(self.eval_run_tracker[f'{eval_task}.{metric_name}']) == eval_task_metrics_mean:
+                if best_function(self.eval_run_tracker[f'{eval_task}.{metric_name}']) \
+                        == eval_task_metrics_mean:
                     save_current_checkpoint = True
 
 
@@ -186,7 +199,8 @@ class Evaluator(object):
                     'learner_state_dict': learner.state_dict(),
                     'optimizer_state_dict': learner.optimizer.state_dict(),
                 }
-                torch.save(checkpoint, os.path.join(wandb.run.dir, f"checkpoint-{num_task_batches}.pt"))
+                torch.save(checkpoint, os.path.join(wandb.run.dir,
+                                                    f"checkpoint-{num_task_batches}.pt"))
                 wandb.save(f"checkpoint-{num_task_batches}.pt")
         logger.info("-"*30)
         logger.info("")
