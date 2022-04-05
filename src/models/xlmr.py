@@ -24,13 +24,12 @@ class XLMR(XLMRobertaModel):
         if pretrained_model_name:
             model = cls.from_pretrained(pretrained_model_name)
 
-            # https://multimodal-toolkit.readthedocs.io/en/latest/_modules/transformers/configuration_xlm_roberta.html
             if 'base' in pretrained_model_name:
                 model._hidden_dim = 768
             elif 'large' in pretrained_model_name:
                 model._hidden_dim = 1024
             else:
-                raise Exception(f"Cannot infer hidden dimension for {cls} model: {pretrained_model_name}")
+                raise Exception(f"Cannot infer hidden dim for model: {pretrained_model_name}")
 
         else:
             raise NotImplementedError(f"{cls} can only be initialized from a pretrained model")
@@ -50,6 +49,14 @@ class XLMR(XLMRobertaModel):
             logger.warning("No specific layers specified to meta learn")
 
         return model
+
+    def forward(self, *args, **kwargs):
+        """ 
+        Overriding default forward method to only return the output tensor of hidden states 
+        from the final layer - has shape: (batch_size, sequence_length, hidden_size)
+        """
+        outputs = super().forward(*args, **kwargs)
+        return outputs.last_hidden_state
 
     @property
     def hidden_dim(self): 

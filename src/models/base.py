@@ -26,7 +26,10 @@ class BaseModel(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def forward(self, *args, **kwargs):
-        """ Must implement a forward pass through the model """
+        """ 
+        Must implement a forward pass through the model. Should return the output of the 
+        final layer (i.e. the final hidden states).
+        """
         raise NotImplementedError()
 
     @abc.abstractmethod
