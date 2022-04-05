@@ -4,11 +4,11 @@ __author__ = 'Richard Diehl Martinez'
 import torch
 import typing
 
-def kl_divergence_gaussians(p: typing.List[torch.Tensor], q: typing.List[torch.Tensor]) -> torch.Tensor:
+def kl_divergence_gaussians(p: typing.List[torch.Tensor], q: typing.List[torch.Tensor]):
     """Calculate KL divergence between 2 diagonal Gaussian
 
     Copied verbatim from: 
-    https://github.com/cnguyen10/few_shot_meta_learning/blob/2b075a5e5de4f81670ae8340e87acfc4d5e9bbc3/_utils.py#L195 
+    https://github.com/cnguyen10/few_shot_meta_learning
 
     Args: each parameter is list with 1st half as mean, and the 2nd half is log_std
     Returns: KL divergence

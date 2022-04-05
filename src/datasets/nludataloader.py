@@ -15,10 +15,11 @@ def nlu_collate(batch):
     Returns: 
         * processed_batch: a dictionary containing the following information
             * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
-            * input_target_idx (torch.tensor): Tensor indicating for each sample at what index we apply 
-                the final classification layer 
+            * input_target_idx (torch.tensor): Tensor indicating for each sample at what index
+                we apply the final classification layer 
             * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
-            * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are not pad tokens
+            * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are
+                 not pad tokens
     """
 
     batch_inputs = []
@@ -35,7 +36,7 @@ def nlu_collate(batch):
         
         
     # NOTE: Padding token needs to be 1, in order to be consistent with hugging face tokenizer: 
-    # https://huggingface.co/transformers/model_doc/xlmroberta.html#transformers.XLMRobertaTokenizer
+    # https://huggingface.co/transformers/model_doc/xlmroberta.html
     input_tensor = torch.ones((len(batch), batch_max_seq_len))
 
     for idx, sample in enumerate(batch_inputs): 

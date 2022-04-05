@@ -17,37 +17,39 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR
 
 class XNLIDatasetGenerator():
 
-    ''' A generator that yields XNLIDataset classes'''
+    ''' 
+    A generator that yields XNLIDataset classes and contains arguments for how to run 
+    evaluation of the XNLI task.
+    '''
 
     def __init__(self, config): 
         """
         We assume that the data for the xnli task has been downloaded as part of the 
-        XTREME cross-lingual benchmark (https://github.com/google-research/xtreme#download-the-data).
+        XTREME cross-lingual benchmark (https://github.com/google-research/xtreme).
 
         Initializes a generator class that yield at each iteration a tuple of 
         Dataset objects each representing a language in the XNLI corpus which are
         the data for (respectively) finetuning and evaluating the model on.
         """
         # location of folder containing xnli data
-        self.root_path = config.get("XNLI_DATASET", "root_path")
+        self.root_path = config.get("XNLI", "root_path")
 
         # whether the evaluation is going to be done on dev or on test
         self.evaluation_partition = config.get("EVALUATION", "partition", fallback="dev")
 
-        # if use_few_shot_adaptation is False then we do zero-shot adaptation (from english -> other language)
-        self.use_few_shot_adaptation = config.getboolean("XNLI_DATASET", "use_few_shot_adaptation", fallback=False)
+        # if use_few_shot_adaptation is False then we do zero-shot adaptation
+        # typically from english -> other language
+        self.use_few_shot_adaptation = config.getboolean("XNLI", "use_few_shot_adaptation",
+                                                         fallback=False)
 
         if self.use_few_shot_adaptation:
             self.translated_root_path = os.path.join(self.root_path, "translate-train")
             assert(os.path.exists(self.translated_root_path)),\
                 "For few shot adaptation must have a translate-train directory"
 
-        # if adapt_on_eval is set to True then we adapt on the evaluation set in addition to also adapting 
-        # on the finetuning set 
-        self.adapt_on_eval = config.getboolean("XNLI_DATASET", "adapt_on_eval", fallback=True)
-
-        if (self.adapt_on_eval == self.use_few_shot_adaptation):
-            logger.warning("Both few shot adaptation and adaptation on evaluation set are set to the same value")
+        # if adapt_on_eval is True, then - assuming we are using platipus - we take 
+        # an adaptation step on the final evaluation dataset.  
+        self.adapt_on_eval = config.getboolean("XNLI", "adapt_on_eval", fallback=True)
 
         self.language_files = self._get_language_files(self.root_path)
 
@@ -84,8 +86,10 @@ class XNLIDatasetGenerator():
             if self.use_few_shot_adaptation and file_path_lng != "en":
                 # looking up the translated version of the current evaluation file
                 # except when the eval language is already english 
-                translated_file_path = list(filter(lambda x: file_path_lng in x, translated_file_paths))[0]
-                translated_full_file_path = os.path.join(self.translated_root_path, translated_file_path)
+                translated_file_path = list(filter(lambda x: file_path_lng in x,
+                                                   translated_file_paths))[0]
+                translated_full_file_path = os.path.join(self.translated_root_path,
+                                                         translated_file_path)
                 language_file_dict['finetune'] = (file_path_lng, translated_full_file_path)
             else: 
                 # if we are doing zero-shot adaptation, then we always finetune on english data
@@ -107,9 +111,11 @@ class XNLIDatasetGenerator():
         for language_file_dict in self.language_files:
             # the finetuning set is translated if few shot learning is set and the current language 
             # is not english
-            finetune_translated = self.use_few_shot_adaptation and language_file_dict['finetune'][0] != "en"
+            finetune_translated = self.use_few_shot_adaptation\
+                                    and language_file_dict['finetune'][0] != "en"
 
-            finetune_dataset = XNLIDataset(*language_file_dict['finetune'], translated=finetune_translated)
+            finetune_dataset = XNLIDataset(*language_file_dict['finetune'],
+                                           translated=finetune_translated)
             evaluation_dataset = XNLIDataset(*language_file_dict['evaluation'])
 
             yield (finetune_dataset, evaluation_dataset)
@@ -187,9 +193,9 @@ def main():
     from nludataloader import NLUDataLoader
 
     config = ConfigParser()
-    config.add_section('XNLI_DATASET')
-    config.set('XNLI_DATASET', 'root_path', '../../data/xtreme/download/xnli')
-    config.set('XNLI_DATASET', 'use_few_shot_adaptation', 'True')
+    config.add_section('XNLI')
+    config.set('XNL', 'root_path', '../../data/xtreme/download/xnli')
+    config.set('XNLI', 'use_few_shot_adaptation', 'True')
 
     dataset_generator = XNLIDatasetGenerator(config)
 
