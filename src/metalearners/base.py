@@ -3,18 +3,40 @@ __author__ = 'Richard Diehl Martinez'
 
 import abc 
 import torch
+import torch.nn.functional as F 
 import math
 
 class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
-    def __init__(self):
+    def __init__(self, base_model, device, **kwargs):
         """
         BaseLearner establishes the inferface for the learner class and 
-        inherents from torch.nn.Module
+        inherents from torch.nn.Module. 
+        
+        Args: 
+            * base_model (implements a BaseModel)
+            * device (str): what device to use for training (either 'cpu' or 'gpu) 
         """
         super().__init__()
+        
+        # every learned will need to use CE for the initial (meta-)learning objective
+        self.ce_loss_function = torch.nn.CrossEntropyLoss()
 
-    ###### Helper methods ######
+        # hidden dimensions of the outputs of the base_model
+        self.base_model_hidden_dim = base_model.hidden_dim 
+
+        self.device = device
+
+    ###### Task head initialization methods ######
+
+    """
+    NOTE: Everytime we train and evaluate a model using a learner, we need to initialize 
+    and train a 'task head'. For every type of task (e.g. classification, q&a) we can have 
+    different methods for initializing the task head (e.g. randomly). To initialize a task 
+    head, we first define an initialization function that we wrap using the 
+    register_initialization_method() method, and then we can call initialize_task_head() with
+    the appropriate parameters.
+    """
 
     _classification_head_initializers = {}
 
@@ -86,6 +108,37 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         
         return initialization_function(**init_kwargs)
 
+    ###### Model training and evaluation helper methods ######
+
+    def _compute_classification_loss(self, model_outputs, data_batch, task_classifier_weights):
+        """
+        Helper function for computing the classification loss on a given batch of data. We 
+        assume that the data has already been passed through the base_model - the result of which
+        is model_outputs (i.e. the final layer's hidden states). 
+
+        Args: 
+            * model_outputs (torch.Tensor): Result of passing data_batch through the 
+                base_model. Should have shape: (batch_size, sequence_length, hidden_size)
+            * data_batch (dict): Batch of data for a forward pass through the model 
+                (see run_inner_loop for information on the data structure)
+            * task_classifier_weights (dict): weights of classifier layer; see 
+                _initialize_task_classifier_weights for explanation of dict values
+        Returns: 
+            * logits ([torch.Tensor]): Logits resulting from forward pass 
+            * loss (int): Loss of data 
+        """
+
+        #indexing into sequence layer of model_outputs -> (batch_size, hidden_size) 
+        batch_size = model_outputs.size(0)
+        last_hidden_state = model_outputs[torch.arange(batch_size),
+                                              data_batch['input_target_idx']]
+
+        # (batch_size, num_classes) 
+        logits = F.linear(last_hidden_state, **task_classifier_weights)
+        loss = self.ce_loss_function(input=logits, target=data_batch['label_ids'])
+
+        return (logits, loss)
+
     ###### Model training methods ######
 
     def optimizer_step(self, set_zero_grad=False):
@@ -107,18 +160,18 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         that the class contains the model that is to-be meta-learned.
 
         Args:
-            * support_batch: a dictionary containing the following information for the support set
+            * support_batch: A dictionary containing the following information for the support set
                 * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
                 * input_target_idx (torch.tensor): Tensor indicating for each sample at what index
                     we apply the final classification layer 
                 * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
                 * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are
                     not pad tokens
-            * query_batch [optional]: same as support_batch, but for the data of the query set.
+            * query_batch [optional]: Same as support_batch, but for the data of the query set.
                 This argument might be optional depending on how the learner is implemented.
 
         Returns: 
-            * loss (torch.tensor): a tensor containing the loss that results from the inner loop 
+            * loss (torch.tensor): A tensor containing the loss that results from the inner loop 
         """
         raise NotImplementedError()
 
@@ -127,6 +180,8 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def run_finetuning_classification(self, finetune_dataloader, *args, **kwargs):
         """
+        Finetunes the model on the data of finetune_dataloader.
+
         Args:
             * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model is
                 passed in as a dataloader (in most cases this will be an NLUDataloader)
@@ -140,17 +195,21 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def run_inference_classification(self, inference_dataloader, *args, **kwargs):
         """
+        Evaluates the model on the data of inference_dataloader.
+
         Args: 
             * inference_dataloader (torch.data.Dataloader): The dataset for inference is passed
                 in as a dataloader (in most cases this will be an NLUDataloader)
 
         Returns: 
-            * predictions ([int]): a dictionary storing the model's predictions for each 
+            * predictions ([int]): A dictionary storing the model's predictions for each 
                 datapoint passed in from the inference_dataloader as an int. 
-            * loss (int): the value of the classification loss on the inference dataset.
+            * loss (int): The value of the classification loss on the inference dataset.
         """
         raise NotImplementedError()
 
+
+# Defining task head initialization functions
 
 @BaseLearner.register_initialization_method
 def classification_random(base_model_hidden_dim, n_classes, device, **kwargs):

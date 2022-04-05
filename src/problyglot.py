@@ -8,7 +8,7 @@ import wandb
 import os 
 
 from .models import XLMR
-from .metalearners import Platipus
+from .metalearners import Platipus, BaselineLearner
 from .evaluation import Evaluator
 from .utils import device as DEFAULT_DEVICE, move_to_device
 from .datasets import MetaDataset, MetaDataLoader
@@ -56,7 +56,10 @@ class Problyglot(object):
             self.evaluator = Evaluator(config)
 
     def load_model(self, base_model_name):
-        """ Helper function for reading in base model - should be intialized with from_kwargs() class method """
+        """
+        Helper function for reading in base model, should be intialized with the 
+        from_kwargs() class method 
+        """
 
         logger.info(f"Loading base model: {base_model_name}")
         model = None
@@ -83,15 +86,19 @@ class Problyglot(object):
         # NOTE: if any of the learners' params need to be on the GPU the learner class should take care of 
         # moving these params over during initialization
         if learner_method == 'platipus':
-            learner = Platipus(self.base_model, device=self.device, **learner_kwargs)
+            learner_cls = Platipus
+        elif learner_method == 'baseline': 
+            learner_cls = BaselineLearner
         else:
             raise Exception(f"Invalid learner method: learner_method")
+
+        learner = learner_cls(self.base_model, device=self.device, **learner_kwargs)
 
         # possibly load in learner checkpoint
         checkpoint_file = self.config.get("LEARNER", "checkpoint_file", fallback="")
         if checkpoint_file:
             if not self.use_wandb:
-                logger.warning("Could not load in checkpoint file becase use_wandb is set to False")
+                logger.warning("Could not load in checkpoint file, use_wandb is set to False")
             else:
                 checkpoint_run = self.config.get("LEARNER", "checkpoint_run")
                 logger.info(f"Loading in checkpoint file: {checkpoint_file}")
@@ -99,7 +106,8 @@ class Problyglot(object):
                 checkpoint = torch.load(wandb_checkpoint.name)
                 learner.load_state_dict(checkpoint['learner_state_dict'], strict=False)
                 learner.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                os.rename(os.path.join(wandb.run.dir, checkpoint_file), os.path.join(wandb.run.dir, "loaded_checkpoint.pt"))
+                os.rename(os.path.join(wandb.run.dir, checkpoint_file),
+                          os.path.join(wandb.run.dir, "loaded_checkpoint.pt"))
         else:
             logger.info("No checkpoint used - learning from scratch")
 
@@ -127,9 +135,12 @@ class Problyglot(object):
         logger.info("Running problyglot in training mode")
 
         # setting problyglot training configurations
-        num_tasks_per_iteration = self.config.getint("PROBLYGLOT", "num_tasks_per_iteration", fallback=1)
-        eval_every_n_iteration = self.config.getint("PROBLYGLOT", "eval_every_n_iteration", fallback=0)
-        max_task_batch_steps = self.config.getint("PROBLYGLOT", "max_task_batch_steps", fallback=1)
+        num_tasks_per_iteration = self.config.getint("PROBLYGLOT", "num_tasks_per_iteration",
+                                                     fallback=1)
+        eval_every_n_iteration = self.config.getint("PROBLYGLOT", "eval_every_n_iteration",
+                                                    fallback=0)
+        max_task_batch_steps = self.config.getint("PROBLYGLOT", "max_task_batch_steps",
+                                                  fallback=1)
 
         # counter tracks number of batches of tasks seen by metalearner
         num_task_batches = 0 
@@ -141,7 +152,7 @@ class Problyglot(object):
         if self.use_wandb:
             wandb.define_metric("train.loss", step_metric="num_task_batches", summary='min')
 
-        if self.config.getboolean("PROBLYGOT", "run_initial_eval", fallback=True):
+        if self.config.getboolean("PROBLYGLOT", "run_initial_eval", fallback=True):
             logger.info("Initial evaluation before model training")
             self.evaluator.run(self.learner, num_task_batches=0)
 
@@ -165,9 +176,11 @@ class Problyglot(object):
                 num_task_batches += 1
 
                 self.learner.optimizer_step(set_zero_grad=True)
-                logger.info(f"No. batches of tasks processed: {num_task_batches} -- Task batch loss: {task_batch_loss}")
+                logger.info(f"No. batches of tasks processed: {num_task_batches}")
+                logger.info(f"\t(Meta) training loss: {task_batch_loss}")
                 if self.use_wandb:
-                    wandb.log({"train": {"loss": task_batch_loss}, "num_task_batches": num_task_batches})
+                    wandb.log({"train": {"loss": task_batch_loss},
+                               "num_task_batches": num_task_batches})
                 task_batch_loss = 0 
 
                 # possibly run evaluation of the model

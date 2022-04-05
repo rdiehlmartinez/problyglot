@@ -33,7 +33,6 @@ class Platipus(BaseLearner):
                                     use_first_order=False,
                                     task_embedding_method='val_grad',
                                     task_cls_init_method='random',
-                                    device="cpu",
                                     *args,
                                     **kwargs):
         """
@@ -49,26 +48,22 @@ class Platipus(BaseLearner):
 
         Args: 
             * base_model (implementation of BaseModel)
-            * optimizer_type (str) : the type of the optimizer 
-            * meta_lr (float): learning rate for the outer loop meta learning step
-            * kl_weight (float): trade-off hyper-parameter between the CE term and the KL term of
+            * optimizer_type (str) : The type of optimizer (e.g. 'adam') 
+            * meta_lr (float): Learning rate for the outer loop meta learning step
+            * kl_weight (float): Trade-off hyper-parameter between the CE term and the KL term of
                 the ELBO objective 
-            * num_inner_steps (int): number of gradients steps in the inner looop
-            * use_first_order (bool): whether a first order approximation of higher-order gradients
+            * num_inner_steps (int): Number of gradients steps in the inner looop
+            * use_first_order (bool): Whether a first order approximation of higher-order gradients
                 should be used (defaults to False)
-            * task_embedding_method (str): how to represent the task embedding that is used to
+            * task_embedding_method (str): How to represent the task embedding that is used to
                 condition the task-dependent probability distribution from which we sample weights
                 for a given task (defaults to 'val_grad'). 'Val_grad' is the implicit method used
                 in the platipus paper. 
-            * task_cls_init_method (str): how to initialize the final task classifier layer
+            * task_cls_init_method (str): How to initialize the final task classifier layer
                 (either 'random' or 'protomaml'). 
-            * device (str): what device to use for training (either 'cpu' or 'gpu) 
-
         """
 
-        super().__init__()
-
-        self.device = device
+        super().__init__(base_model, *args, **kwargs)
 
         # getting functional form of the model 
         self.functional_model = higher.patch.make_functional(module=base_model)
@@ -76,9 +71,6 @@ class Platipus(BaseLearner):
         # NOTE: these lines are super important (otherwise computation graph explodes)
         self.functional_model.track_higher_grads = False
         self.functional_model._fast_params = [[]]
-
-        # hidden dimensions of the outputs of the base_model
-        self.base_model_hidden_dim = base_model.hidden_dim 
         
         # establishing meta parameters to-be learned
         self.mu_theta = torch.nn.ParameterList()
@@ -116,9 +108,6 @@ class Platipus(BaseLearner):
 
         # hyper-param for trading off ce-loss and kl-loss
         self.kl_weight = float(kl_weight)
-
-        # defining loss function 
-        self.ce_loss_function = torch.nn.CrossEntropyLoss()
 
         # number of steps to perform in the inner loop
         self.num_inner_steps = int(num_inner_steps)
@@ -158,7 +147,7 @@ class Platipus(BaseLearner):
             * data_batch (dict): Batch of data for a forward pass through the model 
                 (see run_inner_loop for information on the data structure)
             * params ([torch.Tensor]): List of tensor weights storing the model weights 
-            * task_classifier_weights (dict): weights of classifier layer; see 
+            * task_classifier_weights (dict): Weights of classifier layer; see 
                 _initialize_task_classifier_weights for explanation of dict values
 
         Returns:
@@ -170,19 +159,8 @@ class Platipus(BaseLearner):
                                                 attention_mask=data_batch['attention_mask'],
                                                 params=params)
 
-        # last_hidden_state has form (batch_size, sequence_length, hidden_size);
-        # where hidden_size = self.base_model_hidden_dim
-        last_hidden_state = outputs.last_hidden_state
-
-        # indexing into sequence layer of last_hidden state -> (batch_size, hidden_size) 
-        batch_size = last_hidden_state.size(0)
-        last_hidden_state = last_hidden_state[torch.arange(batch_size),
-                                              data_batch['input_target_idx']]
-
-        # (batch_size, num_classes) 
-        logits = F.linear(last_hidden_state, **task_classifier_weights)
-        loss = self.ce_loss_function(input=logits, target=data_batch['label_ids'])
-
+        logits, loss = self._compute_classification_loss(outputs, data_batch, 
+                                                         task_classifier_weights)
         return (logits, loss)
 
     def get_task_init_kwargs(self, data_batch=None, **kwargs):
@@ -342,17 +320,17 @@ class Platipus(BaseLearner):
         https://arxiv.org/pdf/1806.02817.pdf, i.e. the inner loop optimization step.
         
         Args: 
-            * support_batch: a dictionary containing the following information for the support set
+            * support_batch: A dictionary containing the following information for the support set
                 * input_ids (torch.tensor): Input tensors of shape (N*K, max_seq_len)
                 * input_target_idx (torch.tensor): Tensor indicating for each sample at what index
                     we apply the final classification layer 
                 * label_ids (torch.tensor): Tensor of labels corresponding to masked out subword id
                 * attention_mask (torch.tensor): Tensor indicating which tokens in input_ids are
                     not pad tokens
-            * query_batch: same as support_batch, but for the data of the query set 
+            * query_batch: Same as support_batch, but for the data of the query set 
 
         Returns: 
-            * loss (torch.Tensor): loss value of the inner loop calculations
+            * loss (torch.Tensor): Loss value of the inner loop calculations
         """
         # automatically infer the number N of classes
         n_classes = torch.unique(support_batch['label_ids']).numel()
@@ -430,15 +408,17 @@ class Platipus(BaseLearner):
         Returns:
             * inference_params dict containing: 
                 * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
-                * task_classifier_weights (dict): weights of classifier layer; see 
+                * task_classifier_weights (dict): Weights of classifier layer; see 
                     _initialize_task_classifier_weights for explanation of dict values
         """
 
         # task classifier weights are initialized randomly
         adaptation_batch = move_to_device(next(iter(finetune_dataloader)), self.device)
 
-        task_init_data_batch = support_batch if self.task_cls_init_method == 'protomaml' else None
-        init_kwargs = self.get_task_init_kwargs(data_batch=task_init_data_batch)
+        task_init_data_batch = adaptation_batch if self.task_cls_init_method == 'protomaml' \
+                                else None
+        init_kwargs = self.get_task_init_kwargs(n_classes=n_classes,
+                                                data_batch=task_init_data_batch)
        
         task_classifier_weights = self.initialize_task_head(task_type='classification',
                                                             method=self.task_cls_init_method,
@@ -510,15 +490,15 @@ class Platipus(BaseLearner):
             * inference_dataloader (torch.data.Dataloader): The dataset for inference is passed
                 in as a dataloader (in most cases this will be an NLUDataloader)
             * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
-            * task_classifier_weights (dict): weights of classifier layer; see 
+            * task_classifier_weights (dict): Weights of classifier layer; see 
                 _initialize_task_classifier_weights for explanation of dict values
-            * adaptation_batch: (optional) a dictionary containing the required data for running
+            * adaptation_batch: (optional) A dictionary containing the required data for running
                 a forward pass of the model (see run_inner_loop for explanation of the dictionary)
 
         Returns: 
-            * predictions ([int]): a dictionary storing the model's predictions for each 
+            * predictions ([int]): A dictionary storing the model's predictions for each 
                 datapoint passed in from the inference_dataloader as an int. 
-            * loss (int): the value of the classification loss on the inference dataset.
+            * loss (int): The value of the classification loss on the inference dataset.
         """
 
         if adaptation_batch is not None:
@@ -584,11 +564,9 @@ def classification_protomaml(base_model_hidden_dim, n_classes, functional_model,
                                         attention_mask=data_batch['attention_mask'],
                                         params=[p for p in params])
 
-    # last_hidden_state has form (batch_size, sequence_length, hidden_size);
-    last_hidden_state = outputs.last_hidden_state
-    batch_size = last_hidden_state.size(0)
-    last_hidden_state = last_hidden_state[torch.arange(batch_size),
-                                            data_batch['input_target_idx']]
+    # outputs has form (batch_size, sequence_length, hidden_size);
+    batch_size = outputs.size(0)
+    last_hidden_state = outputs[torch.arange(batch_size), data_batch['input_target_idx']]
 
     prototypes = torch.zeros((n_classes, base_model_hidden_dim), device=device)
 
