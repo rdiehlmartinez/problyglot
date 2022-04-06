@@ -6,14 +6,15 @@ import torch
 from .base import TaskHead
 
 class ClassificationHead(TaskHead):
+    """ Task head for classification tasks"""
 
     loss_function = torch.nn.CrossEntropyLoss()
 
-    def __call__(self, input, labels, weights):
+    def __call__(self, model_output, labels, weights):
         """ 
         Runs a forward pass of the classification head 
         """
-        logits = F.linear(last_hidden_state, **task_classifier_weights)
+        logits = F.linear(model_output, **weights)
         loss = self.loss_function(input=logits, target=labels)
         
         return (logits, loss)
@@ -28,7 +29,7 @@ def classification_random(base_model_hidden_dim, n_classes, device, **kwargs):
         * n_classes (int): Number of classes to classify over 
         * device (str): Device type ('cuda' or 'cpu')
     Returns: 
-        * task_classifier_weights (dict): {
+        * task_head_weights (dict): {
             * weight -> (torch.Tensor): classification weight matrix
             * bias -> (torch.Tensor): classification bias vector
             }
@@ -45,12 +46,12 @@ def classification_random(base_model_hidden_dim, n_classes, device, **kwargs):
     classifier_weight.requires_grad = True
     classifier_bias.requires_grad = True
 
-    task_classifier_weights = {
+    task_head_weights = {
         "weight": classifier_weight,
         "bias": classifier_bias
     }
 
-    return task_classifier_weights
+    return task_head_weights
 
 
 # Registering new task head initialization method 
@@ -68,7 +69,7 @@ def classification_protomaml(base_model_hidden_dim, n_classes, functional_model,
             (see run_inner_loop for information on the data structure).
         * device (str): Device type ('cuda' or 'cpu')
     Returns: 
-        * task_classifier_weights (dict): {
+        * task_head_weights (dict): {
             * weight -> (torch.Tensor): classification weight matrix
             * bias -> (torch.Tensor): classification bias vector
             }
@@ -94,9 +95,9 @@ def classification_protomaml(base_model_hidden_dim, n_classes, functional_model,
     classifier_weight = 2 * prototypes
     classifier_bias = -torch.norm(prototypes, dim=1)**2
 
-    task_classifier_weights = { 
+    task_head_weights = { 
         "weight": classifier_weight,
         "bias": classifier_bias
     }
 
-    return task_classifier_weights
+    return task_head_weights

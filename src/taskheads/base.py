@@ -1,8 +1,10 @@
 __author__ = 'Richard Diehl Martinez'
 
+import abc 
+
 from collections import defaultdict
 
-class TaskHead(object):
+class TaskHead(object, metaclass=abc.ABCMeta):
     """
     Everytime we train and evaluate a model using a learner, we need to initialize 
     and train a 'task head'. For every type of task (e.g. classification, q&a) we can have 
@@ -13,6 +15,11 @@ class TaskHead(object):
     """
 
     _task_head_initializers = defaultdict(dict)
+
+    @abc.abstractmethod
+    def __call__(self, *args, **kwargs):
+        """ Implements the functional forward pass through the task head"""
+        raise NotImplementedError()
 
     @classmethod
     def register_initialization_method(cls, initialization_function):
@@ -51,7 +58,7 @@ class TaskHead(object):
                 (e.g. 'random')
             * init_kwargs (dict): Keyword arguments used by the initialization function 
         Returns: 
-            * task_classifier_weights (dict): An arbitrary dictionary containing weights for 
+            * task_head_weights (dict): An arbitrary dictionary containing weights for 
                 the initialized task head. Depending on the task_type the weights returned 
                 might be different. 
         """
