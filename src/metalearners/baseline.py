@@ -6,6 +6,7 @@ import torch
 import itertools
 
 from .base import BaseLearner
+from ..taskheads import TaskHead
 from ..utils import move_to_device
 
 class BaselineLearner(BaseLearner):
@@ -20,7 +21,7 @@ class BaselineLearner(BaseLearner):
 
         Args: 
             * base_model (implementation of BaseModel)
-            * optimizer_type (str) : The type of optimizer (e.g. 'adam')
+            * optimizer_type (str): The type of optimizer (e.g. 'adam')
             * lr (int): Learning rate of the optimizer
         """
         
@@ -93,7 +94,7 @@ class BaselineLearner(BaseLearner):
                             # expanding support 
                             support_batch_tensor = torch.cat((support_batch_tensor,
                                                               expansion_tensor),
-                                                            dim=1).long()
+                                                              dim=1).long()
                     
                 input_batch[key] = torch.cat((support_batch_tensor, query_batch_tensor), dim=0)
         
@@ -102,17 +103,15 @@ class BaselineLearner(BaseLearner):
 
         n_classes = torch.unique(support_batch['label_ids']).numel()
         init_kwargs = self.get_task_init_kwargs(n_classes=n_classes)
-        task_classifier_weights = self.initialize_task_head(task_type='classification',
-                                                            method='random',
-                                                            init_kwargs=init_kwargs)
+        task_head_weights = TaskHead.initialize_task_head(task_type='classification',
+                                                          method='random',
+                                                          init_kwargs=init_kwargs)
 
 
         outputs = self.base_model(input_ids=data_batch['input_ids'],
                                   attention_mask=data_batch['attention_mask'])
 
-        _, loss = self._compute_classification_loss(outputs, data_batch, 
-                                                         task_classifier_weights)
-
+        _, loss = self._compute_classification_loss(outputs, data_batch, task_head_weights)
 
         return loss
 
@@ -130,30 +129,28 @@ class BaselineLearner(BaseLearner):
             * max_finetuning_batch_steps (int): Optional maximum number of batch steps to take 
                 for model finetuning 
 
-
         Returns:
             * inference_params dict containing: 
                 * finetuned_model ([torch.nn.Module]): Finetuned model
-                * task_classifier_weights (dict): weights of classifier layer; see 
-                    _initialize_task_classifier_weights for explanation of dict values
+                * task_head_weights (dict): weights of classifier layer
         """ 
         init_kwargs = self.get_task_init_kwargs(n_classes=n_classes)
        
-        task_classifier_weights = self.initialize_task_head(task_type='classification',
-                                                            method='random',
-                                                            init_kwargs=init_kwargs)
+        task_head_weights = TaskHead.initialize_task_head(task_type='classification',
+                                                          method='random',
+                                                          init_kwargs=init_kwargs)
 
         finetuned_model = copy.deepcopy(self.base_model)
 
-        finetuned_task_classifier_weights = {}
-        for k, p in task_classifier_weights.items():
+        finetuned_task_head_weights = {}
+        for k, p in task_head_weights.items():
             detached_p = p.detach()
             detached_p.requires_grad = True
-            finetuned_task_classifier_weights[k] = detached_p
+            finetuned_task_head_weights[k] = detached_p
 
         finetuned_model_params = [p for p in finetuned_model.parameters() if p.requires_grad]
         finetune_params = itertools.chain(finetuned_model_params,
-                                          finetuned_task_classifier_weights.values())
+                                          finetuned_task_head_weights.values())
         finetune_optimizer = torch.optim.Adam(params=finetune_params)
 
         for batch_idx, data_batch in enumerate(finetune_dataloader):
@@ -165,7 +162,7 @@ class BaselineLearner(BaseLearner):
                                       attention_mask=data_batch['attention_mask'],)
 
             _, loss = self._compute_classification_loss(outputs, data_batch, 
-                                                        finetuned_task_classifier_weights)
+                                                        finetuned_task_head_weights)
 
             loss.backward()
             finetune_optimizer.step()
@@ -175,13 +172,13 @@ class BaselineLearner(BaseLearner):
 
         inference_params = {
             "finetuned_model": finetuned_model, 
-            "task_classifier_weights": finetuned_task_classifier_weights
+            "task_head_weights": finetuned_task_head_weights
         }
 
         return inference_params
 
     def run_inference_classification(self, inference_dataloader, finetuned_model,
-                                     task_classifier_weights, **kwargs):
+                                     task_head_weights, **kwargs):
         """
         This method is to be called after the run_finetuning_classification. Runs inference 
         on the data stored in inference_dataloader, using the finetuned_model.
@@ -190,8 +187,7 @@ class BaselineLearner(BaseLearner):
             * inference_dataloader (torch.data.Dataloader): The dataset for inference is passed
                 in as a dataloader (in most cases this will be an NLUDataloader)
             * finetuned_model ([torch.nn.Module]): Finetuned model
-            * task_classifier_weights (dict): weights of classifier layer; see 
-                _initialize_task_classifier_weights for explanation of dict values
+            * task_head_weights (dict): weights of task head (classifier layer)
 
         Returns: 
             * predictions ([int]): a dictionary storing the model's predictions for each 
@@ -212,7 +208,7 @@ class BaselineLearner(BaseLearner):
                                           attention_mask=data_batch['attention_mask'],)
 
                 logits, loss = self._compute_classification_loss(outputs, data_batch, 
-                                                                 task_classifier_weights)
+                                                                 task_head_weights)
             
 
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
