@@ -50,9 +50,9 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
     ###### Model training and evaluation helper methods ######
 
     @staticmethod
-    def _compute_classification_loss(model_outputs, data_batch, task_head_weights):
+    def _compute_task_loss(model_outputs, data_batch, task_head_weights, task_type):
         """
-        Helper function for computing the classification loss on a given batch of data. We 
+        Helper function for computing the task loss on a given batch of data. We 
         assume that the data has already been passed through the base_model - the result of which
         is model_outputs (i.e. the final layer's hidden states). 
 
@@ -62,19 +62,22 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
             * data_batch (dict): Batch of data for a forward pass through the model 
                 (see run_inner_loop for information on the data structure)
             * task_head_weights (dict): weights used by the task head (in this the classifier head)
+            * task_type (str): Type of task (e.g. 'classification')
         Returns: 
             * logits ([torch.Tensor]): Logits resulting from forward pass 
             * loss (int): Loss of data 
         """
-        # TODO: instead of having a _compute_x_loss for different classification heads
-        # just pass in a keyword arg indicating what type of loss to use
 
         #indexing into sequence layer of model_outputs -> (batch_size, hidden_size) 
         batch_size = model_outputs.size(0)
         last_hidden_state = model_outputs[torch.arange(batch_size),
                                               data_batch['input_target_idx']]
 
-        head = ClassificationHead()
+        if task_type == 'classification':
+            head = ClassificationHead()
+        else: 
+            raise Exception(f"Invalid task type: {task_type}")
+
         logits, loss = head(model_output=last_hidden_state, labels=data_batch['label_ids'],
                             weights=task_head_weights)
 

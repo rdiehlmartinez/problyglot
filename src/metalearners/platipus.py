@@ -258,7 +258,8 @@ class Platipus(BaseLearner):
                                                     attention_mask=data_batch['attention_mask'],
                                                     params=adapted_params)
 
-            _, loss = self._compute_classification_loss(outputs, data_batch, task_head_weights)
+            _, loss = self._compute_task_loss(outputs, data_batch, task_head_weights,
+                                              task_type='classification')
                                                         
             # Computing resulting gradients of the inner loop
             grad_params = [p for p in adapted_params if p.requires_grad]
@@ -353,7 +354,8 @@ class Platipus(BaseLearner):
                                                 attention_mask=query_batch['attention_mask'],
                                                 params=phi)
 
-        _, ce_loss = self._compute_classification_loss(outputs, query_batch, task_head_weights)
+        _, ce_loss = self._compute_task_loss(outputs, query_batch, task_head_weights, 
+                                             task_type='classification')
 
         # computing KL loss (requires adapting mu_theta to the support set)
         
@@ -446,10 +448,10 @@ class Platipus(BaseLearner):
                                                     attention_mask=data_batch['attention_mask'],
                                                     params=finetuned_theta)
 
-            _, ce_loss = self._compute_classification_loss(outputs, data_batch, 
-                                                           finetuned_task_head_weights)
+            _, loss = self._compute_task_loss(outputs, data_batch, finetuned_task_head_weights, 
+                                              task_type='classification')
 
-            ce_loss.backward()
+            loss.backward()
             finetune_optimizer.step()
 
             if max_finetuning_batch_steps > 0 and (batch_idx + 1) >= max_finetuning_batch_steps:
@@ -513,8 +515,8 @@ class Platipus(BaseLearner):
                                                         attention_mask=data_batch['attention_mask'],
                                                         params=finetuned_params)
 
-                logits, loss = self._compute_classification_loss(outputs, data_batch, 
-                                                                 task_head_weights)
+                logits, loss = self._compute_task_loss(outputs, data_batch, task_head_weights,
+                                                       task_type='classification')
 
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
 

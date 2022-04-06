@@ -111,7 +111,8 @@ class BaselineLearner(BaseLearner):
         outputs = self.base_model(input_ids=data_batch['input_ids'],
                                   attention_mask=data_batch['attention_mask'])
 
-        _, loss = self._compute_classification_loss(outputs, data_batch, task_head_weights)
+        _, loss = self._compute_task_loss(outputs, data_batch, task_head_weights,
+                                          task_type='classification')
 
         return loss
 
@@ -161,8 +162,8 @@ class BaselineLearner(BaseLearner):
             outputs = finetuned_model(input_ids=data_batch['input_ids'],
                                       attention_mask=data_batch['attention_mask'],)
 
-            _, loss = self._compute_classification_loss(outputs, data_batch, 
-                                                        finetuned_task_head_weights)
+            _, loss = self._compute_task_loss(outputs, data_batch, finetuned_task_head_weights,
+                                              task_type='classification')
 
             loss.backward()
             finetune_optimizer.step()
@@ -207,10 +208,9 @@ class BaselineLearner(BaseLearner):
                 outputs = finetuned_model(input_ids=data_batch['input_ids'],
                                           attention_mask=data_batch['attention_mask'],)
 
-                logits, loss = self._compute_classification_loss(outputs, data_batch, 
-                                                                 task_head_weights)
+                logits, loss = self._compute_task_loss(outputs, data_batch, task_head_weights,
+                                                       task_type='classification')
             
-
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
 
                 batch_size = logits.size(0)
