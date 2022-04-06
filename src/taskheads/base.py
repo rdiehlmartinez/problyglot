@@ -64,7 +64,7 @@ class TaskHead(object, metaclass=abc.ABCMeta):
         """
 
         try: 
-            initialization_function = self._task_head_initializers[task_type][method]
+            initialization_function = cls._task_head_initializers[task_type][method]
         except KeyError:
             raise Exception("Could not initialize task head; invalid task type or method")
         

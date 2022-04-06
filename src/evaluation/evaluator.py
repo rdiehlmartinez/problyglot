@@ -105,9 +105,9 @@ class Evaluator(object):
             eval_task_losses = []
 
             for subtask_idx, (finetune_dataset, evaluation_dataset) in enumerate(dataset_generator):
-                finetune_language = finetune_dataset.language
-                evaluation_language = evaluation_dataset.language
-                logger.info(f"\t Finetuning on language: {finetune_language} - evaluating on language: {evaluation_language}")
+                finetune_lng = finetune_dataset.language
+                evaluation_lng = evaluation_dataset.language
+                logger.info(f"\t Finetuning on: {finetune_lng} - evaluating on: {evaluation_lng}")
 
                 finetune_dataloader = NLUDataLoader(finetune_dataset,
                                                     batch_size=self.batch_size)

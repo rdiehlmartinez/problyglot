@@ -2,6 +2,7 @@ __author__ = 'Richard Diehl Martinez'
 """ Defines a task head for classification tasks """
 
 import torch
+import torch.nn.functional as F 
 
 from .base import TaskHead
 
