@@ -1,9 +1,9 @@
 __author__ = 'Richard Diehl Martinez'
+
 """
 Implementation of the platipus model, proposed by Finn et el. https://arxiv.org/pdf/1806.02817.pdf
 
-Implementation is adapted from the open-source project: 
-https://github.com/cnguyen10/few_shot_meta_learning
+Code adapted from: https://github.com/cnguyen10/few_shot_meta_learning
 """
 
 import typing
@@ -13,7 +13,6 @@ import itertools
 from collections import OrderedDict
 
 import torch
-import torch.nn.functional as F 
 
 from .base import BaseLearner
 from ..utils.modeling import kl_divergence_gaussians
@@ -50,6 +49,14 @@ class Platipus(BaseLearner):
             * base_model (implementation of BaseModel)
             * optimizer_type (str) : The type of optimizer (e.g. 'adam') 
             * meta_lr (float): Learning rate for the outer loop meta learning step
+            * The following four keyword args define inner-loop hyper-parameters that can be 
+                meta-learned. The values passed in represent the initial values.   
+                * gamma_p (float): std. dev of the gaussian dist. from which we sample weights 
+                    conditioned on the support set 
+                * gamma_q (float): std. dev of the gaussian dist. from which we sample weights 
+                    conditioned on the query set 
+                * inner_lr (float): inner-loop learning rate of the base_model 
+                * classifier_lr (float): inner-loop learning rate of the classifier head
             * kl_weight (float): Trade-off hyper-parameter between the CE term and the KL term of
                 the ELBO objective 
             * num_inner_steps (int): Number of gradients steps in the inner looop
@@ -137,31 +144,6 @@ class Platipus(BaseLearner):
             updated_state_dict[key] = val
         
         return updated_state_dict
-
-
-    def _run_forward_pass(self, data_batch, params, task_classifier_weights):
-        """ 
-        Helper method for running a batch of data through a forward pass of the functional model 
-
-        Args: 
-            * data_batch (dict): Batch of data for a forward pass through the model 
-                (see run_inner_loop for information on the data structure)
-            * params ([torch.Tensor]): List of tensor weights storing the model weights 
-            * task_classifier_weights (dict): Weights of classifier layer; see 
-                _initialize_task_classifier_weights for explanation of dict values
-
-        Returns:
-            * logits ([torch.Tensor]): Logits resulting from forward pass 
-            * loss (int): Loss of data 
-        """
-
-        outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
-                                                attention_mask=data_batch['attention_mask'],
-                                                params=params)
-
-        logits, loss = self._compute_classification_loss(outputs, data_batch, 
-                                                         task_classifier_weights)
-        return (logits, loss)
 
     def get_task_init_kwargs(self, data_batch=None, **kwargs):
         """ 
@@ -269,11 +251,16 @@ class Platipus(BaseLearner):
             adapted_params = params 
 
         for _ in range(self.num_inner_steps):
+            
+            # Running forward pass through functioanl model and computing classificaiton loss
+            outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
+                                                    attention_mask=data_batch['attention_mask'],
+                                                    params=adapted_params)
 
-            _, loss = self._run_forward_pass(data_batch,
-                                             params=adapted_params, 
-                                             task_classifier_weights=task_classifier_weights)
-
+            _, loss = self._compute_classification_loss(outputs, data_batch, 
+                                                        task_classifier_weights)
+                                                        
+            # Computing resulting gradients of the inner loop
             grad_params = [p for p in adapted_params if p.requires_grad]
 
             if self.use_first_order or evaluation_mode:
@@ -362,9 +349,13 @@ class Platipus(BaseLearner):
                                                 optimize_classifier=True)
 
         # evaluating on the query batch using the adapted params phi  
-        _, ce_loss = self._run_forward_pass(query_batch,
-                                            params=phi,
-                                            task_classifier_weights=task_classifier_weights)
+
+        outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
+                                                attention_mask=query_batch['attention_mask'],
+                                                params=phi)
+
+        _, ce_loss = self._compute_classification_loss(outputs, query_batch, 
+                                                       task_classifier_weights)
 
         # computing KL loss (requires adapting mu_theta to the support set)
         
@@ -456,10 +447,13 @@ class Platipus(BaseLearner):
             finetune_optimizer.zero_grad()
 
             # run SGD on the finetuned theta parameters
-            _, ce_loss = self._run_forward_pass(data_batch, 
-                                                params=finetuned_theta,
-                                                task_classifier_weights=\
-                                                    finetuned_task_classifier_weights)
+
+            outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
+                                                    attention_mask=data_batch['attention_mask'],
+                                                    params=finetuned_theta)
+
+            _, ce_loss = self._compute_classification_loss(outputs, data_batch, 
+                                                           finetuned_task_classifier_weights)
 
             ce_loss.backward()
             finetune_optimizer.step()
@@ -523,10 +517,12 @@ class Platipus(BaseLearner):
             for data_batch in inference_dataloader: 
                 data_batch = move_to_device(data_batch, self.device)
 
-                logits, loss = self._run_forward_pass(data_batch, 
-                                                      params=finetuned_params, 
-                                                      task_classifier_weights=\
-                                                        task_classifier_weights)
+                outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
+                                                        attention_mask=data_batch['attention_mask'],
+                                                        params=finetuned_params)
+
+                logits, loss = self._compute_classification_loss(outputs, data_batch, 
+                                                                 task_classifier_weights)
 
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
 
@@ -537,52 +533,3 @@ class Platipus(BaseLearner):
             total_loss /= total_samples
 
         return (predictions, total_loss)
-
-
-# Registering new task head initialization method 
-@BaseLearner.register_initialization_method
-def classification_protomaml(base_model_hidden_dim, n_classes, functional_model, params,
-                                data_batch, device, **kwargs):
-    """
-    Args: 
-        * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
-        * n_classes (int): Number of classes to classify over 
-        * functional_model (higher.MonkeyPatched): The 'functionalized' version of the 
-            base model
-        * params ([torch.Tensor]): List of tensor weights storing the model weights.
-        * data_batch (dict): Batch of data for a forward pass through the model 
-            (see run_inner_loop for information on the data structure).
-        * device (str): Device type ('cuda' or 'cpu')
-    Returns: 
-        * task_classifier_weights (dict): {
-            * weight -> (torch.Tensor): classification weight matrix
-            * bias -> (torch.Tensor): classification bias vector
-            }
-    """
-
-    outputs = functional_model.forward(input_ids=data_batch['input_ids'],
-                                        attention_mask=data_batch['attention_mask'],
-                                        params=[p for p in params])
-
-    # outputs has form (batch_size, sequence_length, hidden_size);
-    batch_size = outputs.size(0)
-    last_hidden_state = outputs[torch.arange(batch_size), data_batch['input_target_idx']]
-
-    prototypes = torch.zeros((n_classes, base_model_hidden_dim), device=device)
-
-    for c in range(n_classes):
-        idx = torch.nonzero(data_batch['label_ids'] == c).squeeze()
-        if idx.nelement() != 0:
-            prototypes[c] = torch.mean(last_hidden_state[idx], dim=0)
-        else:
-            logger.warning("ProtoMaml weight initialization missing at least one class")
-
-    classifier_weight = 2 * prototypes
-    classifier_bias = -torch.norm(prototypes, dim=1)**2
-
-    task_classifier_weights = { 
-        "weight": classifier_weight,
-        "bias": classifier_bias
-    }
-
-    return task_classifier_weights

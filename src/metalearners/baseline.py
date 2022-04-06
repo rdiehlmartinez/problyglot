@@ -3,7 +3,6 @@ __author__ = 'Richard Diehl Martinez'
 
 import copy
 import torch
-import torch.nn.functional as F 
 import itertools
 
 from .base import BaseLearner
@@ -36,37 +35,8 @@ class BaselineLearner(BaseLearner):
         else: 
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
 
-    # Methods for training model 
-
-    def _run_forward_pass(self, data_batch, task_classifier_weights, model_override=None):
-        """ 
-        Helper method for running a batch of data through a forward pass of the functional model 
-
-        Args: 
-            * data_batch (dict): Batch of data for a forward pass through the model 
-                (see run_inner_loop for information on the data structure)
-            * task_classifier_weights (dict): Weights of classifier layer; see 
-                _initialize_task_classifier_weights for explanation of dict values
-            * model_override (torch.nn.Module): If this optional argument is passed in, 
-                will use this model instead of self.base_model 
-
-        Returns:
-            * logits ([torch.Tensor]): Logits resulting from forward pass 
-            * loss (int): Loss of data 
-        """
-        if model_override: 
-            model = model_override 
-        else: 
-            model = self.base_model
-
-        outputs = model(input_ids=data_batch['input_ids'],
-                        attention_mask=data_batch['attention_mask'],)
-
-        logits, loss = self._compute_classification_loss(outputs, data_batch, 
-                                                         task_classifier_weights)
-        return (logits, loss)
-
-
+    ###### Model training methods ######
+ 
     def run_inner_loop(self, support_batch, query_batch=None, *args, **kwargs): 
         """ 
         Run an inner loop optimization step. Usually this is in the context of 
@@ -136,12 +106,17 @@ class BaselineLearner(BaseLearner):
                                                             method='random',
                                                             init_kwargs=init_kwargs)
 
-        _, loss = self._run_forward_pass(input_batch,
-                                         task_classifier_weights=task_classifier_weights)
+
+        outputs = self.base_model(input_ids=data_batch['input_ids'],
+                                  attention_mask=data_batch['attention_mask'])
+
+        _, loss = self._compute_classification_loss(outputs, data_batch, 
+                                                         task_classifier_weights)
+
 
         return loss
 
-    # Methods for evaluating model 
+    ###### Model evaluation methods ######
 
     def run_finetuning_classification(self, finetune_dataloader, n_classes,
                                       max_finetuning_batch_steps=-1, **kwargs):
@@ -186,10 +161,11 @@ class BaselineLearner(BaseLearner):
             finetune_optimizer.zero_grad()
 
             # run SGD on the finetuned theta parameters
-            _, loss = self._run_forward_pass(data_batch, 
-                                             task_classifier_weights=\
-                                                finetuned_task_classifier_weights,
-                                             model_override=finetuned_model)
+            outputs = finetuned_model(input_ids=data_batch['input_ids'],
+                                      attention_mask=data_batch['attention_mask'],)
+
+            _, loss = self._compute_classification_loss(outputs, data_batch, 
+                                                        finetuned_task_classifier_weights)
 
             loss.backward()
             finetune_optimizer.step()
@@ -232,11 +208,12 @@ class BaselineLearner(BaseLearner):
             for data_batch in inference_dataloader: 
                 data_batch = move_to_device(data_batch, self.device)
 
-                logits, loss = self._run_forward_pass(data_batch, 
-                                                      task_classifier_weights=\
-                                                        task_classifier_weights,
-                                                      model_override=finetuned_model)
+                outputs = finetuned_model(input_ids=data_batch['input_ids'],
+                                          attention_mask=data_batch['attention_mask'],)
 
+                logits, loss = self._compute_classification_loss(outputs, data_batch, 
+                                                                 task_classifier_weights)
+            
 
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
 
