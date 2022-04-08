@@ -49,9 +49,12 @@ class MetaDataset(IterableDataset):
         languages = self._get_languages(config)
         self.datasets, self.datasets_md = self._initialize_datasets(config, languages)
 
-        self.task_sampling_method = config.get("META_DATASET", "task_sampling_method", fallback="random")
+        self.task_sampling_method = config.get("META_DATASET", "task_sampling_method",
+                                               fallback="random")
         if self.task_sampling_method == 'proportional':
-            self.task_sampling_prop_rate = config.getfloat("META_DATASET", "task_sampling_prop_rate", fallback=0.5)
+            self.task_sampling_prop_rate = config.getfloat("META_DATASET",
+                                                           "task_sampling_prop_rate",
+                                                           fallback=0.5)
         
         super().__init__()
 
@@ -123,8 +126,8 @@ class MetaDataset(IterableDataset):
 
     def __next__(self):
         """
-        Called by MetaDataLoader to iterate over the dataset. First samples a language (i.e. a task)
-        from which to sample a support and query set. 
+        Called by MetaDataLoader to iterate over the dataset. First samples a language 
+        (aka. a task) from which to sample a support and query set. 
 
         Returns: 
             * Tuple containing: 
@@ -136,9 +139,11 @@ class MetaDataset(IterableDataset):
         if self.task_sampling_method == 'random':
             sampled_language = random.sample(self.datasets_md.keys(), k=1)[0]
         elif self.task_sampling_method == 'proportional':
-            sampling_weights = [v['dataset_size']**self.task_sampling_prop_rate for v in self.datasets_md.values()]
+            sampling_weights = [ v['dataset_size']**self.task_sampling_prop_rate 
+                                    for v in self.datasets_md.values()]
             sampling_weights = sampling_weights/np.sum(sampling_weights)
-            sampled_language = random.choices(list(self.datasets_md.keys()), weights=sampling_weights, k=1)[0]
+            sampled_language = random.choices(list(self.datasets_md.keys()),
+                                              weights=sampling_weights, k=1)[0]
         else: 
             logger.error(f"Invalid task sampling method: {self.task_sampling_method}")
             raise Exception(f"Invalid task sampling method: {self.task_sampling_method}")
@@ -182,15 +187,17 @@ class IterableLanguageTaskDataset(object):
             * lng (str): iso code for the language corresponding to the dataset
             * [optional] n (int): The N in N-way K-shot classification (defaults to 10)
             * [optional] k (int): The K in N-way K-shot classification (defaults to 5)
-            * [optional] q (int: The number of samples in the query set for each 'task' (defaults to 10)
-                Thus for each class, we must find K+Q examples of that class
-            * [optional] buffer_size (int): size of the memory-mapped buffer (defaults to 100,000 bytes)
-            * [optional] sample_size (int): number of phrases to sample before returning a sample for 
-                N-way k-shot classification (defaults to 10,000)
-            * [optional] mask_sampling_method (str): either one of 'random' or 'proportional' which specify 
-                how to sample the N tasks
-            * [optional] mask_sampling_prop_rate (float): used if mask_sampling_method is 'proportional', 
-                specifies the sampling proportional rate so that x~U(x)^{mask_sampling_prop_rate}
+            * [optional] q (int: The number of samples in the query set for each 'task'
+                (defaults to 10) Thus for each class, we must find K+Q examples of that class.
+            * [optional] buffer_size (int): size of the memory-mapped buffer
+                (defaults to 100,000 bytes)
+            * [optional] sample_size (int): number of phrases to sample before returning a sample 
+                for N-way k-shot classification (defaults to 10,000)
+            * [optional] mask_sampling_method (str): either one of 'random' or 'proportional' which
+                specify how to sample the N tasks
+            * [optional] mask_sampling_prop_rate (float): used if mask_sampling_method is
+                'proportional',  specifies the sampling proportional rate so that
+                x~U(x)^{mask_sampling_prop_rate}
         """
         super().__init__()
         self.root_fp = root_fp 
@@ -203,7 +210,7 @@ class IterableLanguageTaskDataset(object):
 
         # NOTE: Each sample requires roughly 1000 bytes to store (~liberal heuristic)
         if (self.N*self.K*1000 > buffer_size): 
-            logger.warning(f"The buffer size used in BaseIterableDataset ({buffer_size} bytes) is likely too small")
+            logger.warning(f"Small buffer size used in BaseIterableDataset ({buffer_size} bytes)")
 
         self.sample_size = int(sample_size)
         self.mask_sampling_method = mask_sampling_method
@@ -258,8 +265,12 @@ class IterableLanguageTaskDataset(object):
         support_samples = defaultdict(list)
         query_samples = defaultdict(list)
 
-        for return_dict, data_buffer, num_samples_per_n in [(support_samples, self.support_data_buffer, self.K),
-                                                            (query_samples, self.query_data_buffer, self.Q)]:
+        for return_dict, data_buffer, num_samples_per_n in [(support_samples,
+                                                             self.support_data_buffer,
+                                                             self.K),
+                                                            (query_samples,
+                                                             self.query_data_buffer,
+                                                             self.Q)]:
             for n in range(self.N): 
 
                 curr_n = int.from_bytes(data_buffer.read(BYTE_ENCODING_SIZE), BYTE_ENDIAN_MODE)
@@ -348,9 +359,11 @@ class IterableLanguageTaskDataset(object):
             sampled_N = random.sample(filtered_subword_to_sample.keys(), k=self.N)
         elif self.mask_sampling_method == 'proportional':
             # samples n ~ U(n)^mask_sampling_prop_rate
-            sampling_weights = np.array([len(v)**self.mask_sampling_prop_rate for v in filtered_subword_to_sample.values()])
+            sampling_weights = np.array([len(v)**self.mask_sampling_prop_rate
+                                            for v in filtered_subword_to_sample.values()])
             sampling_weights = sampling_weights/np.sum(sampling_weights)
-            sampled_N = np.random.choice(list(filtered_subword_to_sample.keys()), self.N, replace=False, p=sampling_weights)
+            sampled_N = np.random.choice(list(filtered_subword_to_sample.keys()), self.N,
+                                         replace=False, p=sampling_weights)
             sampled_N = sampled_N.tolist()
         else: 
             logger.error(f"Invalid mask sampling method: {self.mask_sampling_method}")
@@ -462,22 +475,25 @@ class IterableLanguageTaskDataset(object):
                                 if token_id in tokenizer.all_special_ids:
                                     # don't include special tokens 
                                     continue
-                                curr_subword_to_sample[token_id].append((curr_samples_processed, idx))
+                                curr_subword_to_sample[token_id].append((curr_samples_processed,
+                                                                         idx))
                             
                             curr_samples_processed += 1
                             total_samples_processed += 1 
 
                         if curr_samples_processed == self.sample_size: 
                             # done reading in all of the data 
-
-                            support_set, query_set = self.generate_N_K_samples(curr_subword_to_sample, curr_samples)
+                            support_set, query_set = self.generate_N_K_samples(
+                                                                            curr_subword_to_sample,
+                                                                            curr_samples
+                                                                            )
 
                             # writing data out to buffer 
                             try:
                                 self.write_to_buffer(support_set, self.support_data_buffer)
                                 self.write_to_buffer(query_set, self.query_data_buffer)
                             except ValueError as e: 
-                                raise Exception(f"Buffer for dataset: {self.language} ran out of space")
+                                raise Exception(f"Buffer for dataset: {self.language} used up")
 
                             # resetting per-sample data structures 
                             curr_samples_processed = 0 
@@ -490,13 +506,18 @@ class IterableLanguageTaskDataset(object):
             
             if total_samples_processed < self.sample_size: 
                 # will possibly trigger after first pass through the entire dataset 
-                logger.warning(f"Size of dataset for language {self.language}: {total_samples_processed} is smaller than {self.sample_size} samples")
+                logger.warning(
+                f""" 
+                Size of dataset for language {self.language}: {total_samples_processed}
+                is smaller than {self.sample_size} samples
+                """)
                 is_too_small = True
 
             if is_too_small: 
                 # we have looped over entire dataset before sampling sample_size samples
 
-                support_set, query_set = self.generate_N_K_samples(curr_subword_to_sample, curr_samples)
+                support_set, query_set = self.generate_N_K_samples(curr_subword_to_sample,
+                                                                   curr_samples)
 
                 # writing data out to buffer 
                 try:

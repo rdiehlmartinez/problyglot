@@ -83,8 +83,8 @@ class Problyglot(object):
         logger.info(f"Using learner: {learner_method}")
         learner = None
         learner_kwargs = dict(self.config.items("LEARNER"))
-        # NOTE: if any of the learners' params need to be on the GPU the learner class should take care of 
-        # moving these params over during initialization
+        # NOTE: if any of the learners' params need to be on the GPU the learner class should
+        # take care of moving these params over during initialization
         if learner_method == 'platipus':
             learner_cls = Platipus
         elif learner_method == 'baseline': 
