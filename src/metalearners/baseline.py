@@ -61,6 +61,8 @@ class BaselineLearner(BaseLearner):
             * loss (torch.tensor): a tensor containing the loss that results from the inner loop 
         """
 
+        self.base_model.train()
+
         # combine support and query batch together 
         if query_batch: 
             input_batch = {}
@@ -136,6 +138,8 @@ class BaselineLearner(BaseLearner):
                 * finetuned_model ([torch.nn.Module]): Finetuned model
                 * task_head_weights (dict): weights of classifier layer
         """ 
+        self.base_model.train()
+
         init_kwargs = self.get_task_init_kwargs(n_classes=n_classes)
        
         task_head_weights = TaskHead.initialize_task_head(task_type='classification',
@@ -203,6 +207,9 @@ class BaselineLearner(BaseLearner):
 
         # Running final inference script over the evaluation data
         with torch.no_grad():
+
+            finetuned_model.eval()
+
             for data_batch in inference_dataloader: 
                 data_batch = move_to_device(data_batch, self.device)
 
@@ -219,5 +226,7 @@ class BaselineLearner(BaseLearner):
                 total_samples += batch_size 
 
             total_loss /= total_samples
+
+            # reference to finetuned_model deleted - no need to set in train mode
 
         return (predictions, total_loss)

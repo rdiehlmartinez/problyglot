@@ -321,6 +321,9 @@ class Platipus(BaseLearner):
         Returns: 
             * loss (torch.Tensor): Loss value of the inner loop calculations
         """
+
+        self.functional_model.train()
+
         # automatically infer the number N of classes
         n_classes = torch.unique(support_batch['label_ids']).numel()
 
@@ -350,10 +353,13 @@ class Platipus(BaseLearner):
                                                 optimize_classifier=True)
 
         # evaluating on the query batch using the adapted params phi  
+        self.functional_model.eval()
 
         outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
                                                 attention_mask=query_batch['attention_mask'],
                                                 params=phi)
+
+        self.functional_model.train()
 
         _, ce_loss = self._compute_task_loss(outputs, query_batch, task_head_weights, 
                                              task_type='classification')
@@ -400,6 +406,7 @@ class Platipus(BaseLearner):
                 * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
                 * task_head_weights (dict): Weights of task head (classifier head)
         """
+        self.functional_model.train()
 
         # task classifier weights are initialized randomly
         adaptation_batch = move_to_device(next(iter(finetune_dataloader)), self.device)
@@ -509,6 +516,8 @@ class Platipus(BaseLearner):
 
         # Running final inference script over the evaluation data
         with torch.no_grad():
+            self.functional_model.eval()
+
             for data_batch in inference_dataloader: 
                 data_batch = move_to_device(data_batch, self.device)
 
@@ -526,5 +535,7 @@ class Platipus(BaseLearner):
                 total_samples += batch_size 
 
             total_loss /= total_samples
+
+            self.functional_model.train()
 
         return (predictions, total_loss)
