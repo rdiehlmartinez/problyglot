@@ -76,6 +76,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         if task_type == 'classification':
             head = ClassificationHead()
         else: 
+            logger.exception(f"Invalid task type: {task_type}")
             raise Exception(f"Invalid task type: {task_type}")
 
         logits, loss = head(model_output=last_hidden_state, labels=data_batch['label_ids'],

@@ -145,7 +145,7 @@ class MetaDataset(IterableDataset):
             sampled_language = random.choices(list(self.datasets_md.keys()),
                                               weights=sampling_weights, k=1)[0]
         else: 
-            logger.error(f"Invalid task sampling method: {self.task_sampling_method}")
+            logger.exception(f"Invalid task sampling method: {self.task_sampling_method}")
             raise Exception(f"Invalid task sampling method: {self.task_sampling_method}")
         
         sampled_dataset = self.datasets[sampled_language]
@@ -366,7 +366,7 @@ class IterableLanguageTaskDataset(object):
                                          replace=False, p=sampling_weights)
             sampled_N = sampled_N.tolist()
         else: 
-            logger.error(f"Invalid mask sampling method: {self.mask_sampling_method}")
+            logger.exception(f"Invalid mask sampling method: {self.mask_sampling_method}")
             raise Exception(f"Invalid mask sampling method: {self.mask_sampling_method}")
 
 
@@ -493,6 +493,7 @@ class IterableLanguageTaskDataset(object):
                                 self.write_to_buffer(support_set, self.support_data_buffer)
                                 self.write_to_buffer(query_set, self.query_data_buffer)
                             except ValueError as e: 
+                                logger.exception(f"Buffer for dataset: {self.language} used up")
                                 raise Exception(f"Buffer for dataset: {self.language} used up")
 
                             # resetting per-sample data structures 
@@ -524,6 +525,7 @@ class IterableLanguageTaskDataset(object):
                     self.write_to_buffer(support_set, self.support_data_buffer)
                     self.write_to_buffer(query_set, self.query_data_buffer)
                 except ValueError as e: 
+                    logger.exception(f"Buffer for dataset: {self.language} ran out of space")
                     raise Exception(f"Buffer for dataset: {self.language} ran out of space")
 
                 # resetting per-sample data structures 

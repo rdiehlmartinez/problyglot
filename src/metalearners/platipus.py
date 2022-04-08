@@ -111,7 +111,8 @@ class Platipus(BaseLearner):
         self.meta_lr = float(meta_lr)
         if optimizer_type == 'adam': 
             self.optimizer = torch.optim.Adam(params=self.all_meta_params, lr=self.meta_lr)
-        else: 
+        else:
+            logger.exception(f"Invalid optimizer type: {optimizer_type}")
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
 
         # hyper-param for trading off ce-loss and kl-loss

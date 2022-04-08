@@ -99,6 +99,7 @@ class Evaluator(object):
                 metric_name = "acc"
                 metric_summary = 'max'
             else: 
+                logger.exception(f"Invalid task type: {eval_task_type} for task: {eval_task}")
                 raise Exception(f"Invalid task type: {eval_task_type} for task: {eval_task}")
 
             eval_task_metrics = []

@@ -34,6 +34,7 @@ class BaselineLearner(BaseLearner):
         if optimizer_type == 'adam': 
             self.optimizer = torch.optim.Adam(params=params, lr=float(lr))
         else: 
+            logger.exception(f"Invalid optimizer type: {optimizer_type}")
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
 
     ###### Model training methods ######

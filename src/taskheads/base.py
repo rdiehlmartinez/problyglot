@@ -35,13 +35,14 @@ class TaskHead(object, metaclass=abc.ABCMeta):
         if task_type == 'classification': 
             cls._task_head_initializers[task_type][method] = initialization_function
         else:
-            raise Exception(f"""Could not register task head initializer:
+            error_msg = f"""Could not register task head initializer:
                                 {initialization_function.__name__},
                                 the name of the function should be of the form:
                                 (task_type)_(initialization_method).
                                 E.g.: classification_random(...)
-                            """
-            )
+                         """
+            logger.exception(error_msg)
+            raise Exception(error_msg)
 
         return initialization_function
 
@@ -66,6 +67,7 @@ class TaskHead(object, metaclass=abc.ABCMeta):
         try: 
             initialization_function = cls._task_head_initializers[task_type][method]
         except KeyError:
+            logger.exception("Could not initialize task head; invalid task type or method")
             raise Exception("Could not initialize task head; invalid task type or method")
         
         return initialization_function(**init_kwargs)

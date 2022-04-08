@@ -67,6 +67,7 @@ class Problyglot(object):
         if base_model_name == 'xlm_r':
             model_cls = XLMR
         else:
+            logger.exception(f"Invalid base model type: {base_model_name}")
             raise Exception(f"Invalid base model type: {base_model_name}")
 
         model = model_cls.from_kwargs(**model_kwargs)
@@ -90,7 +91,8 @@ class Problyglot(object):
         elif learner_method == 'baseline': 
             learner_cls = BaselineLearner
         else:
-            raise Exception(f"Invalid learner method: learner_method")
+            logger.exception(f"Invalid learner method: {learner_method}")
+            raise Exception(f"Invalid learner method: {learner_method}")
 
         learner = learner_cls(self.base_model, device=self.device, **learner_kwargs)
 
