@@ -75,12 +75,19 @@ class BaselineLearner(BaseLearner):
                     # For input_ids and attention_mask we need to make sure that 
                     # the first dimension (sequence length dim) is the same 
                     # so we pad the shorter dim  
-                    batch_size = support_batch_tensor.size(0)
                     max_seq_len_support = support_batch_tensor.size(1)
                     max_seq_len_query = query_batch_tensor.size(1)
 
                     if max_seq_len_support != max_seq_len_query: 
                         tensor_dim_diff = abs(max_seq_len_support - max_seq_len_query)
+
+                        if max_seq_len_support > max_seq_len_query: 
+                            # expansion tensor batch size must match query batch size 
+                            batch_size = query_batch_tensor.size(0)
+                        else: 
+                            # expansion tensor batch size must match support batch size 
+                            batch_size = support_batch_tensor.size(0)
+
                         expansion_tensor_dims = (batch_size, tensor_dim_diff)
                         if key == "input_ids": 
                             expansion_tensor = torch.ones(expansion_tensor_dims,
@@ -111,10 +118,10 @@ class BaselineLearner(BaseLearner):
                                                           init_kwargs=init_kwargs)
 
 
-        outputs = self.base_model(input_ids=data_batch['input_ids'],
-                                  attention_mask=data_batch['attention_mask'])
+        outputs = self.base_model(input_ids=input_batch['input_ids'],
+                                  attention_mask=input_batch['attention_mask'])
 
-        _, loss = self._compute_task_loss(outputs, data_batch, task_head_weights,
+        _, loss = self._compute_task_loss(outputs, input_batch, task_head_weights,
                                           task_type='classification')
 
         return loss

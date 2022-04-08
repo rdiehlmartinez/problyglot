@@ -168,6 +168,7 @@ class IterableLanguageTaskDataset(object):
                                 sample_size=10_000,
                                 mask_sampling_method="proportional",
                                 mask_sampling_prop_rate=0.3,
+                                max_seq_len=128,
                                 **kwargs): 
         """ 
         Initializes params and data buffers for the iterable dataset. 
@@ -198,6 +199,7 @@ class IterableLanguageTaskDataset(object):
             * [optional] mask_sampling_prop_rate (float): used if mask_sampling_method is
                 'proportional',  specifies the sampling proportional rate so that
                 x~U(x)^{mask_sampling_prop_rate}
+            * [optional] max_seq_len (int): max length of input sequence 
         """
         super().__init__()
         self.root_fp = root_fp 
@@ -210,11 +212,17 @@ class IterableLanguageTaskDataset(object):
 
         # NOTE: Each sample requires roughly 1000 bytes to store (~liberal heuristic)
         if (self.N*self.K*1000 > buffer_size): 
-            logger.warning(f"Small buffer size used in BaseIterableDataset ({buffer_size} bytes)")
+            logger.warning(f"Small buffer size for processing lng: {lng} ({buffer_size} bytes)")
 
         self.sample_size = int(sample_size)
         self.mask_sampling_method = mask_sampling_method
         self.mask_sampling_prop_rate = float(mask_sampling_prop_rate)
+                    
+        self.max_seq_len = int(max_seq_len)
+        if self.max_seq_len > tokenizer.max_len_single_sentence:
+            logger.error(f"max_seq_len has to be less than {tokenizer.max_len_single_sentence}")
+            logger.error(f"Overriding max_seq_len to {tokenizer.max_len_single_sentence}")
+            self.max_seq_len = tokenizer.max_len_single_sentence
 
         # event and lock to communicate between parent and child 
         self.event = multiprocessing.Event()
@@ -466,7 +474,7 @@ class IterableLanguageTaskDataset(object):
                         if curr_samples_processed < self.sample_size: 
                             token_ids = self._tokenize_line(curr_line)
 
-                            if len(token_ids) > tokenizer.max_len_single_sentence:
+                            if len(token_ids) > self.max_seq_len:
                                 # skip the current sample if it is too large for the model
                                 continue
 
@@ -493,8 +501,8 @@ class IterableLanguageTaskDataset(object):
                                 self.write_to_buffer(support_set, self.support_data_buffer)
                                 self.write_to_buffer(query_set, self.query_data_buffer)
                             except ValueError as e: 
-                                logger.exception(f"Buffer for dataset: {self.language} used up")
-                                raise Exception(f"Buffer for dataset: {self.language} used up")
+                                logger.exception(f"Buffer for dataset: {self.language} is used up")
+                                raise Exception(f"Buffer for dataset: {self.language} is used up")
 
                             # resetting per-sample data structures 
                             curr_samples_processed = 0 
@@ -507,11 +515,10 @@ class IterableLanguageTaskDataset(object):
             
             if total_samples_processed < self.sample_size: 
                 # will possibly trigger after first pass through the entire dataset 
-                logger.warning(
-                f""" 
-                Size of dataset for language {self.language}: {total_samples_processed}
-                is smaller than {self.sample_size} samples
-                """)
+
+                logger.warning( 
+                    f"Size of dataset for language {self.language}: {total_samples_processed} " +\
+                    f"is smaller than {self.sample_size} samples")
                 is_too_small = True
 
             if is_too_small: 

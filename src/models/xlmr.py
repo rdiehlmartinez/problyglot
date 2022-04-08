@@ -29,9 +29,11 @@ class XLMR(XLMRobertaModel):
             elif 'large' in pretrained_model_name:
                 model._hidden_dim = 1024
             else:
+                logger.exception(f"Cannot infer hidden dim for model: {pretrained_model_name}")
                 raise Exception(f"Cannot infer hidden dim for model: {pretrained_model_name}")
 
         else:
+            logger.exception(f"{cls} can only be initialized from a pretrained model")
             raise NotImplementedError(f"{cls} can only be initialized from a pretrained model")
 
         
