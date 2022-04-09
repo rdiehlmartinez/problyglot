@@ -10,6 +10,7 @@ import random
 import time
 import logging
 import math
+import copy 
 import numpy as np
 
 from torch.utils.data import IterableDataset
@@ -359,8 +360,12 @@ class IterableLanguageTaskDataset(object):
         }
 
         # Checking whether the dataset is too small
-        assert(len(filtered_subword_to_sample) > self.N),\
-            f"Not enough data to generate N-way k-shot samples for dataset: {self.language}"
+        try: 
+            assert(len(filtered_subword_to_sample) > self.N)
+        except AssertionError:
+            logger.exception(f"Cannot generate N * (K+Q) samples for dataset: {self.language}")
+            logger.exception(f"Max possible N is: {len(filtered_subword_to_sample)}")
+            raise             
 
         # sampling mechanism for getting the N classes
         if self.mask_sampling_method == 'random': 
@@ -388,7 +393,7 @@ class IterableLanguageTaskDataset(object):
             """
            
             across_sample_index, within_sample_index = k_index_information
-            curr_sample = curr_samples[across_sample_index]
+            curr_sample = copy.deepcopy(curr_samples[across_sample_index])
             curr_sample[within_sample_index] = MASK_TOKEN_ID
 
             return curr_sample
