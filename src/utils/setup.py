@@ -11,8 +11,15 @@ import json
 
 from configparser import ConfigParser
 
-def set_seed(seed=42):
+def set_seed(seed):
     ''' Sets seed for reproducibility '''
+    if seed < 0: 
+        logging.info("Skipping seed setting for reproducibility")
+        logging.info("If you would like to set a seed, set seed to a positive value in config")
+        return
+
+    logging.info(f"Setting seed: {seed}")
+        
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -62,5 +69,5 @@ def setup(config_file_path):
     config = setup_config(config_file_path)
     setup_logger(config_file_path)
     setup_wandb(config)
-    set_seed(config.getint("EXPERIMENT", "set_seed", fallback=42))
+    set_seed(config.getint("EXPERIMENT", "seed", fallback=-1))
     return config

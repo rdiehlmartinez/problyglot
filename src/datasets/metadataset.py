@@ -101,13 +101,17 @@ class MetaDataset(IterableDataset):
         datasets = {}
         datasets_md = {}
 
+        # passing seed to reproduce the same data by IterableLanguageTaskDataset
+        seed = config.getint("EXPERIMENT", "seed", fallback=-1)
+
         for language in languages: 
             lng_root_fp = os.path.join(data_root, language)
 
             dataset_size = compute_dataset_size(lng_root_fp)
 
             language_task_dataset_kwargs = dict(config.items('LANGUAGE_TASK_DATASET'))
-            dataset = IterableLanguageTaskDataset(lng_root_fp, language, **language_task_dataset_kwargs)
+            dataset = IterableLanguageTaskDataset(lng_root_fp, language, seed=seed,
+                                                  **language_task_dataset_kwargs)
             
             datasets[language] = dataset
             datasets_md[language] = {"dataset_size": dataset_size} # Can add more metadata 
@@ -161,10 +165,11 @@ class IterableLanguageTaskDataset(object):
     Iterable dataset that reads language data from a provided directory of txt files 
     and returns at each iteration some N-way K-shot example
     '''
-    def __init__(self, root_fp, lng, 
-                                n = 10,
-                                k = 5,
-                                q = 10,
+    def __init__(self, root_fp, lng,
+                                seed=-1,
+                                n=10,
+                                k=5,
+                                q=10,
                                 buffer_size=1e6,
                                 sample_size=10_000,
                                 mask_sampling_method="proportional",
@@ -187,6 +192,7 @@ class IterableLanguageTaskDataset(object):
                 stored. This directory can have many files which are all 
                 expected to be .txt.gz files, where each line is a new sample.
             * lng (str): iso code for the language corresponding to the dataset
+            * seed (int): seed to use for reproducibility; a negative value will skip seed setting
             * [optional] n (int): The N in N-way K-shot classification (defaults to 10)
             * [optional] k (int): The K in N-way K-shot classification (defaults to 5)
             * [optional] q (int: The number of samples in the query set for each 'task'
@@ -235,6 +241,7 @@ class IterableLanguageTaskDataset(object):
         
         self.worker = multiprocessing.Process(
             target=self.generate_buffer,
+            args=(seed,)
         )
         self.event.set()
         self.worker.start()
@@ -344,7 +351,7 @@ class IterableLanguageTaskDataset(object):
             * curr_samples [List]: A list of self.sample_size number of samples 
 
         Returns: 
-            * support_set {token id: [K samples where token id occurs]}: mapping of N token ids 
+            * support_set {token id: [K ssamples where token id occurs]}: mapping of N token ids 
                 to K samples per token id occurs
             * query_set {token id: [Q samples where token id occurs]}: mapping of N token ids 
                 to Q samples per token id occurs
@@ -445,17 +452,22 @@ class IterableLanguageTaskDataset(object):
         self.support_data_buffer.seek(0) 
         self.query_data_buffer.seek(0)
 
-    def generate_buffer(self):
+    def generate_buffer(self, seed):
         """ 
         NOTE: This should only ever be run by a child worker. 
-        This method generates a stream of data that is stored in a buffer 
-        from where it can be accessed by the parent process to generate support 
-        and query data. 
+        This method generates a stream of data that is stored in a buffer from where it can be
+        accessed by the parent process to generate support and query data. Because this method
+        lives on a separate process, we need to set a seed again for this process (if we want to
+        ensure reproducibility).
 
         Importantly, we currently continue to loop over the data by cycling over 
         the file paths indefinitely - the worker only stops when it is shut down by
         the main process.
         """
+
+        if seed > 0: 
+            random.seed(seed)
+            np.random.seed(seed)
 
         # This lock is acquired when worker is initially launched
         self.lock.acquire()
