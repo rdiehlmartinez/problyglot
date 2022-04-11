@@ -121,6 +121,8 @@ class Problyglot(object):
         on data stored in self.meta_dataloader
         """
 
+        learner_method = self.config.get("LEARNER", "method")
+
         # Evaluation Mode - will return early
         if not hasattr(self, "meta_dataset"):
             logger.info("Running problygot in evaluation mode")
@@ -149,10 +151,25 @@ class Problyglot(object):
 
         # counter tracks loss over an entire batch of tasks  
         task_batch_loss = 0 
+        if learner_method == "platipus":
+            # platipus tracks the ce and kl parts of the loss function
+            task_batch_ce_loss = 0
+            task_batch_kl_loss = 0
 
         # metric for logging training data
         if self.use_wandb:
             wandb.define_metric("train.loss", step_metric="num_task_batches", summary='min')
+
+            if learner_method == "platipus":
+                # platipus tracks additional information about the parts of the loss functions,
+                # and the learning procedure of the hyper-parameters
+                wandb.define_metric("train.loss_ce", step_metric="num_task_batches", summary='min')
+                wandb.define_metric("train.loss_kl", step_metric="num_task_batches", summary='min')
+
+                wandb.define_metric("gamma_p", step_metric="num_task_batches")
+                wandb.define_metric("gamma_q", step_metric="num_task_batches")
+                wandb.define_metric("classifier_lr", step_metric="num_task_batches")
+                wandb.define_metric("inner_lr", step_metric="num_task_batches")
 
         if self.config.getboolean("PROBLYGLOT", "run_initial_eval", fallback=True):
             logger.info("Initial evaluation before model training")
@@ -166,30 +183,58 @@ class Problyglot(object):
             support_batch = move_to_device(support_batch, self.device)
             query_batch = move_to_device(query_batch, self.device)
 
-            task_loss = self.learner.run_inner_loop(support_batch, query_batch)    
+            if learner_method == "platipus":
+                task_loss, (ce_loss, kl_loss) = self.learner.run_inner_loop(support_batch,
+                                                                            query_batch)
+            else: 
+                task_loss = self.learner.run_inner_loop(support_batch, query_batch)
         
             task_loss = task_loss / num_tasks_per_iteration # normalizing loss 
+            if learner_method == "platipus":
+                ce_loss = ce_loss/num_tasks_per_iteration
+                kl_loss = kl_loss/num_tasks_per_iteration
+           
             task_loss.backward()
 
             task_batch_loss += task_loss.detach().item()
+            if learner_method == "platipus":
+                task_batch_ce_loss += ce_loss.detach().item()
+                task_batch_kl_loss += kl_loss.detach().item()
 
             if ((batch_idx + 1) % num_tasks_per_iteration == 0):
-                
+                # NOTE: We just finished one global meta task batch (batch of tasks)
                 num_task_batches += 1
 
                 self.learner.optimizer_step(set_zero_grad=True)
                 logger.info(f"No. batches of tasks processed: {num_task_batches}")
                 logger.info(f"\t(Meta) training loss: {task_batch_loss}")
                 if self.use_wandb:
+                    if learner_method == "platipus": 
+                        # wandb logging additional info for platipus
+                        wandb.log({"train": {"loss_ce": task_batch_ce_loss,
+                                             "loss_kl": task_batch_kl_loss},
+                                   "gamma_p": self.learner.gamma_p.item(),
+                                   "gamma_q": self.learner.gamma_q.item(),
+                                   "classifier_lr": self.learner.classifier_lr.item(), 
+                                   "inner_lr": self.learner.inner_lr.item()},
+                                   commit=False
+                                  )
+
                     wandb.log({"train": {"loss": task_batch_loss},
-                               "num_task_batches": num_task_batches})
+                               "num_task_batches": num_task_batches},
+                             )
+
                 task_batch_loss = 0 
+                if learner_method == "platipus":
+                    task_batch_ce_loss = 0
+                    task_batch_kl_loss = 0
 
                 # possibly run evaluation of the model
                 if (eval_every_n_iteration and num_task_batches % eval_every_n_iteration == 0):
                     self.evaluator.run(self.learner, num_task_batches=num_task_batches)
 
                 if (num_task_batches % max_task_batch_steps == 0):
+                    # NOTE: stop training if we've done max_task_batch_steps global update steps
                     break
                 
         logger.info("Finished training model")

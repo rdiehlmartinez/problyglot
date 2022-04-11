@@ -378,7 +378,7 @@ class Platipus(BaseLearner):
 
         loss = ce_loss + self.kl_weight * kl_loss
 
-        return loss
+        return loss, (ce_loss, self.kl_weight * kl_loss)
 
 
     ###### Model evaluation methods ######
