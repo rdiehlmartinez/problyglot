@@ -211,8 +211,8 @@ class Problyglot(object):
                 if self.use_wandb:
                     if learner_method == "platipus": 
                         # wandb logging additional info for platipus
-                        wandb.log({"train": {"loss_ce": task_batch_ce_loss,
-                                             "loss_kl": task_batch_kl_loss},
+                        wandb.log({"train.loss_ce": task_batch_ce_loss,
+                                   "train.loss_kl": task_batch_kl_loss,
                                    "gamma_p": self.learner.gamma_p.item(),
                                    "gamma_q": self.learner.gamma_q.item(),
                                    "classifier_lr": self.learner.classifier_lr.item(), 
@@ -220,7 +220,7 @@ class Problyglot(object):
                                    commit=False
                                   )
 
-                    wandb.log({"train": {"loss": task_batch_loss},
+                    wandb.log({"train.loss": task_batch_loss,
                                "num_task_batches": num_task_batches},
                              )
 
