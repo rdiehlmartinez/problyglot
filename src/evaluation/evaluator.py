@@ -138,9 +138,9 @@ class Evaluator(object):
 
                 # For logging of metric
                 if self.use_wandb:
-                    wandb.define_metric(f"{eval_task}.{evaluation_language}.{metric_name}",
+                    wandb.define_metric(f"{eval_task}.{evaluation_lng}.{metric_name}",
                                         step_metric="num_task_batches", summary=metric_summary)
-                    wandb.define_metric(f"{eval_task}.{evaluation_language}.loss",
+                    wandb.define_metric(f"{eval_task}.{evaluation_lng}.loss",
                                         step_metric="num_task_batches", summary='min')
 
                 # compute metrics using predictions 
@@ -148,7 +148,7 @@ class Evaluator(object):
                 logger.info(f"\t \t {metric_name}: {metric:.4f} - Eval Loss: {eval_loss:.4f}")
                 if self.use_wandb:
                     wandb.log({eval_task: {
-                                    evaluation_language: {
+                                    evaluation_lng: {
                                         "loss": eval_loss,
                                         metric_name: metric,
                                     },
