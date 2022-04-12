@@ -411,8 +411,8 @@ class Platipus(BaseLearner):
         # task classifier weights are initialized randomly
         adaptation_batch = move_to_device(next(iter(finetune_dataloader)), self.device)
 
-        task_init_data_batch = adaptation_batch if self.task_cls_init_method == 'protomaml' \
-                                else None
+        task_init_data_batch = adaptation_batch if 'protomaml' in self.task_cls_init_method \
+                                    else None
         init_kwargs = self.get_task_init_kwargs(n_classes=n_classes,
                                                 data_batch=task_init_data_batch)
        
