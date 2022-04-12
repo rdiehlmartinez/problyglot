@@ -156,7 +156,7 @@ class Platipus(BaseLearner):
         """
         init_kwargs = super().get_task_init_kwargs(**kwargs)
         
-        if self.task_cls_init_method == 'protomaml':
+        if 'protomaml' in self.task_cls_init_method:
             assert(data_batch is not None),\
                 "Use of protomaml as a classification head initializer requires a data_batch"
 
@@ -327,7 +327,7 @@ class Platipus(BaseLearner):
         # automatically infer the number N of classes
         n_classes = torch.unique(support_batch['label_ids']).numel()
 
-        task_init_data_batch = support_batch if self.task_cls_init_method == 'protomaml' else None
+        task_init_data_batch = support_batch if 'protomaml' in self.task_cls_init_method else None
         init_kwargs = self.get_task_init_kwargs(n_classes=n_classes,
                                                 data_batch=task_init_data_batch)
        

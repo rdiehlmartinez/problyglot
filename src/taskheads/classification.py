@@ -14,9 +14,20 @@ class ClassificationHead(TaskHead):
 
     def __call__(self, model_output, labels, weights):
         """ 
-        Runs a forward pass of the classification head 
+        Runs a forward pass of the classification head. Architecture inspired by the huggingface
+        implementation of RobertaLMHead 
         """
-        logits = F.linear(model_output, **weights)
+
+        if "fc_weight" in weights:
+            fc_weights = {"weight": weights["fc_weight"], "bias": weights["fc_bias"]}
+
+            model_output = F.linear(model_output, **fc_weights)
+            model_output = F.gelu(model_output)
+            model_output = F.layer_norm(model_output, (model_output.size(-1),))
+
+        output_weights = {"weight": weights["weight"], "bias": weights["bias"]}
+
+        logits = F.linear(model_output, **output_weights)
         loss = self.loss_function(input=logits, target=labels)
         
         return (logits, loss)
@@ -61,6 +72,8 @@ def classification_random(base_model_hidden_dim, n_classes, device, **kwargs):
 def classification_protomaml(base_model_hidden_dim, n_classes, functional_model, params,
                              data_batch, device, **kwargs):
     """
+    Initializes task head using the protomaml (prototypical network + MAML) method. 
+
     Args: 
         * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
         * n_classes (int): Number of classes to classify over 
@@ -100,6 +113,45 @@ def classification_protomaml(base_model_hidden_dim, n_classes, functional_model,
     task_head_weights = { 
         "weight": classifier_weight,
         "bias": classifier_bias
+    }
+
+    return task_head_weights
+
+
+@TaskHead.register_initialization_method
+def classification_protomaml_fc(base_model_hidden_dim, n_classes, **kwargs):
+    """
+    Same as protomaml, expect also adds a fully connected layer (FC) of dimension 
+    base_model_hidden_dim.
+
+    Args: 
+        * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
+        * n_classes (int): Number of classes to classify over 
+
+        * kwargs must contain the following args: 
+            * functional_model (higher.MonkeyPatched): The 'functionalized' version of the 
+                base model
+            * params ([torch.Tensor]): List of tensor weights storing the model weights.
+            * data_batch (dict): Batch of data for a forward pass through the model 
+                (see run_inner_loop for information on the data structure).
+            * device (str): Device type ('cuda' or 'cpu')
+    Returns: 
+        * task_head_weights (dict): {
+            * weight -> (torch.Tensor): classification weight matrix
+            * bias -> (torch.Tensor): classification bias vector
+            }
+    """
+
+    # Little bit of a hack - can initialize weights of FC layer by
+    # repurposing classification_random
+    fc_head_weights = classification_random(base_model_hidden_dim, base_model_hidden_dim, **kwargs)
+
+    protomaml_weights = classification_protomaml(base_model_hidden_dim, n_classes, **kwargs)
+
+    task_head_weights = { 
+        "fc_weight": fc_head_weights["weight"],
+        "fc_bias": fc_head_weights["bias"],
+        **protomaml_weights
     }
 
     return task_head_weights
