@@ -5,12 +5,15 @@ import typing
 import torch
 import logging 
 import wandb
+import time 
 import os 
+
+import torch.multiprocessing as mp
 
 from .models import XLMR
 from .metalearners import Platipus, BaselineLearner
 from .evaluation import Evaluator
-from .utils import device as DEFAULT_DEVICE, move_to_device
+from .utils import device as DEFAULT_DEVICE, move_to_device, num_gpus
 from .datasets import MetaDataset, MetaDataLoader
 
 logger = logging.getLogger(__name__)
@@ -36,17 +39,17 @@ class Problyglot(object):
             self.meta_dataloader = MetaDataLoader(self.meta_dataset)
 
         # Setting device 
-        self.device = config.get("PROBLYGLOT", "device", fallback=DEFAULT_DEVICE)
-        logger.info(f"Running problyglot on device: {self.device}")
+        self.base_device = config.get("PROBLYGLOT", "device", fallback=DEFAULT_DEVICE)
+        logger.info(f"Running problyglot on device: {self.base_device}")
 
         # setting base model 
-        base_model_name = config.get("BASE_MODEL", "name")
-        self.base_model = self.load_model(base_model_name)
-        
-        # setting learner 
-        learner_method = config.get("LEARNER", "method")
-        self.learner = self.load_learner(learner_method)
+        self.base_model_name = config.get("BASE_MODEL", "name")
+        self.base_model = self.load_model(self.base_model_name)
 
+        # setting learner 
+        self.learner_method = self.config.get("LEARNER", "method")
+        self.learner = self.load_learner(self.learner_method)
+        
         if self.use_wandb:
             # setting up metrics for logging to wandb
             wandb.define_metric("num_task_batches")
@@ -71,7 +74,6 @@ class Problyglot(object):
             raise Exception(f"Invalid base model type: {base_model_name}")
 
         model = model_cls.from_kwargs(**model_kwargs)
-        model.to(self.device)
 
         logger.debug("Base Model Architecture: ")
         logger.debug(model)
@@ -84,8 +86,7 @@ class Problyglot(object):
         logger.info(f"Using learner: {learner_method}")
         learner = None
         learner_kwargs = dict(self.config.items("LEARNER"))
-        # NOTE: if any of the learners' params need to be on the GPU the learner class should
-        # take care of moving these params over during initialization
+
         if learner_method == 'platipus':
             learner_cls = Platipus
         elif learner_method == 'baseline': 
@@ -94,7 +95,7 @@ class Problyglot(object):
             logger.exception(f"Invalid learner method: {learner_method}")
             raise Exception(f"Invalid learner method: {learner_method}")
 
-        learner = learner_cls(self.base_model, device=self.device, **learner_kwargs)
+        learner = learner_cls(self.base_model, base_device=self.base_device, **learner_kwargs)
 
         # possibly load in learner checkpoint
         checkpoint_file = self.config.get("LEARNER", "checkpoint_file", fallback="")
@@ -121,9 +122,7 @@ class Problyglot(object):
         on data stored in self.meta_dataloader
         """
 
-        learner_method = self.config.get("LEARNER", "method")
-
-        # Evaluation Mode - will return early
+        ### --------- Evaluation Mode (will return early) ---------- 
         if not hasattr(self, "meta_dataset"):
             logger.info("Running problygot in evaluation mode")
 
@@ -135,10 +134,13 @@ class Problyglot(object):
             self.evaluator.run(self.learner)
             return 
 
-        # Training Mode
+
+        ### --------- Training Mode ---------- 
+
         logger.info("Running problyglot in training mode")
 
-        # setting problyglot training configurations
+        ### reading in training configs
+
         num_tasks_per_iteration = self.config.getint("PROBLYGLOT", "num_tasks_per_iteration",
                                                      fallback=1)
         eval_every_n_iteration = self.config.getint("PROBLYGLOT", "eval_every_n_iteration",
@@ -146,12 +148,41 @@ class Problyglot(object):
         max_task_batch_steps = self.config.getint("PROBLYGLOT", "max_task_batch_steps",
                                                   fallback=1)
 
+        ### If using n GPUs we launch n processes that run the run_inner_loop_mp function 
+
+        # If using multiple GPUs
+        if num_gpus > 1:
+            
+            if num_tasks_per_iteration % num_gpus != 0:
+                error_msg = "Num tasks per iteration has to be dividable by num_pus!"
+                logger.exception(error_msg)
+                raise Exception(error_msg)
+
+            logger.info(f"Running data parallel training with {num_gpus} workers")
+            spawn_context = mp.get_context('spawn')
+
+            data_queue = spawn_context.Queue()
+            loss_queue = spawn_context.Queue()
+
+            gpu_workers = []
+            for rank in range(num_gpus):
+                p = spawn_context.Process(target=self.learner.run_inner_loop_mp,
+                                          args=(rank, num_gpus, data_queue, loss_queue,
+                                                num_tasks_per_iteration  
+                                               )
+                                          )
+                p.start()
+                gpu_workers.append(p)
+
+
+        ### Setting up tracking variables and w&b metrics  
+
         # counter tracks number of batches of tasks seen by metalearner
         num_task_batches = 0 
 
         # counter tracks loss over an entire batch of tasks  
         task_batch_loss = 0 
-        if learner_method == "platipus":
+        if self.learner_method == "platipus":
             # platipus tracks the ce and kl parts of the loss function
             task_batch_ce_loss = 0
             task_batch_kl_loss = 0
@@ -160,7 +191,7 @@ class Problyglot(object):
         if self.use_wandb:
             wandb.define_metric("train.loss", step_metric="num_task_batches", summary='min')
 
-            if learner_method == "platipus":
+            if self.learner_method == "platipus":
                 # platipus tracks additional information about the parts of the loss functions,
                 # and the learning procedure of the hyper-parameters
                 wandb.define_metric("train.loss_ce", step_metric="num_task_batches", summary='min')
@@ -175,33 +206,65 @@ class Problyglot(object):
             logger.info("Initial evaluation before model training")
             self.evaluator.run(self.learner, num_task_batches=0)
 
+
+        ### Model training loop
+
         logger.info("Starting model training")
         for batch_idx, batch in enumerate(self.meta_dataloader):
-            task_name, support_batch, query_batch = batch
-            logger.debug(f"\t Training on task idx {batch_idx} - task: {task_name}")
+            if num_gpus > 1:
+                ## Filling up data queue for workers to process
+                data_queue.put([batch], False)
+            else:
+                ## Basic training with just a single GPU 
+                task_name, support_batch, query_batch = batch
+                logger.debug(f"\t Training on task: {task_name}")
 
-            support_batch = move_to_device(support_batch, self.device)
-            query_batch = move_to_device(query_batch, self.device)
+                support_batch = move_to_device(support_batch, self.base_device)
+                query_batch = move_to_device(query_batch, self.base_device)
 
-            if learner_method == "platipus":
-                task_loss, (ce_loss, kl_loss) = self.learner.run_inner_loop(support_batch,
-                                                                            query_batch)
-            else: 
-                task_loss = self.learner.run_inner_loop(support_batch, query_batch)
-        
-            task_loss = task_loss / num_tasks_per_iteration # normalizing loss 
-            if learner_method == "platipus":
-                ce_loss = ce_loss/num_tasks_per_iteration
-                kl_loss = kl_loss/num_tasks_per_iteration
-           
-            task_loss.backward()
+                if self.learner_method == "platipus":
+                    task_loss, (ce_loss, kl_loss) = self.learner.run_inner_loop(support_batch,
+                                                                                query_batch)
+                else: 
+                    task_loss = self.learner.run_inner_loop(support_batch, query_batch)
+            
+                task_loss = task_loss / num_tasks_per_iteration # normalizing loss 
+                if self.learner_method == "platipus":
+                    ce_loss = ce_loss/num_tasks_per_iteration
+                    kl_loss = kl_loss/num_tasks_per_iteration
+            
+                task_loss.backward()
 
-            task_batch_loss += task_loss.detach().item()
-            if learner_method == "platipus":
-                task_batch_ce_loss += ce_loss.detach().item()
-                task_batch_kl_loss += kl_loss.detach().item()
+                task_batch_loss += task_loss.detach().item()
+                if self.learner_method == "platipus":
+                    task_batch_ce_loss += ce_loss.detach().item()
+                    task_batch_kl_loss += kl_loss.detach().item()
 
             if ((batch_idx + 1) % num_tasks_per_iteration == 0):
+                if num_gpus > 1: 
+
+                    while True:
+                        # Simple but semi-inefficient way of waiting for all processes to finish
+                        # computing gradients
+                        time.sleep(2)
+                        if loss_queue.qsize() == num_tasks_per_iteration:
+                            break
+
+                    ## Multi GPU: gathering up all of the task losses
+                    for _ in range(num_tasks_per_iteration):
+
+                        loss = loss_queue.get()[0]
+
+                        # loss should already be normalized
+                        if self.learner_method == "platipus":
+                            task_loss, ce_loss, kl_loss = loss
+                            task_batch_ce_loss += ce_loss
+                            task_batch_kl_loss += kl_loss
+                        else:
+                            task_loss = loss
+                        
+                        task_batch_loss += task_loss
+                                                
                 # NOTE: We just finished one global meta task batch (batch of tasks)
                 num_task_batches += 1
 
@@ -209,7 +272,7 @@ class Problyglot(object):
                 logger.info(f"No. batches of tasks processed: {num_task_batches}")
                 logger.info(f"\t(Meta) training loss: {task_batch_loss}")
                 if self.use_wandb:
-                    if learner_method == "platipus": 
+                    if self.learner_method == "platipus": 
                         # wandb logging additional info for platipus
                         wandb.log({"train.loss_ce": task_batch_ce_loss,
                                    "train.loss_kl": task_batch_kl_loss,
@@ -225,7 +288,7 @@ class Problyglot(object):
                              )
 
                 task_batch_loss = 0 
-                if learner_method == "platipus":
+                if self.learner_method == "platipus":
                     task_batch_ce_loss = 0
                     task_batch_kl_loss = 0
 
