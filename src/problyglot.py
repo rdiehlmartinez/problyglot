@@ -118,7 +118,7 @@ class Problyglot(object):
 
     def __call__(self) -> None: 
         """ 
-        Train the self.base_model via the self.learner training procedure 
+        Train or evaluate the self.base_model via the self.learner training procedure 
         on data stored in self.meta_dataloader
         """
 
@@ -133,7 +133,6 @@ class Problyglot(object):
             logger.info("Finished running evaluation model")
             self.evaluator.run(self.learner)
             return 
-
 
         ### --------- Training Mode ---------- 
 
@@ -211,13 +210,13 @@ class Problyglot(object):
 
         logger.info("Starting model training")
         for batch_idx, batch in enumerate(self.meta_dataloader):
+            logger.debug(f"\t (Task idx {batch_idx}) Language: {batch[0]}")
             if num_gpus > 1:
                 ## Filling up data queue for workers to process
                 data_queue.put([batch], False)
             else:
                 ## Basic training with just a single GPU 
                 task_name, support_batch, query_batch = batch
-                logger.debug(f"\t Training on task: {task_name}")
 
                 support_batch = move_to_device(support_batch, self.base_device)
                 query_batch = move_to_device(query_batch, self.base_device)
@@ -299,7 +298,9 @@ class Problyglot(object):
                 if (num_task_batches % max_task_batch_steps == 0):
                     # NOTE: stop training if we've done max_task_batch_steps global update steps
                     break
-                
+        
+        ### Model done training - final clean up before exiting 
+
         logger.info("Finished training model")
         if self.config.getboolean('PROBLYGLOT', 'save_final_model', fallback=True):
             if not self.use_wandb:
@@ -311,5 +312,12 @@ class Problyglot(object):
                     'optimizer_state_dict': self.learner.optimizer.state_dict(),
                 }
                 torch.save(checkpoint, os.path.join(wandb.run.dir, f"final.pt"))
+
         logger.info("Shutting down meta dataloader workers")
         self.meta_dataset.shutdown()
+
+        # Shut down workers if using multiple GPUs
+        if num_gpus > 1: 
+            for p in gpu_workers:
+                p.terminate()
+                p.join()
