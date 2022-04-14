@@ -13,7 +13,7 @@ import torch.multiprocessing as mp
 from .models import XLMR
 from .metalearners import Platipus, BaselineLearner
 from .evaluation import Evaluator
-from .utils import device as DEFAULT_DEVICE, move_to_device, num_gpus
+from .utils import device as DEFAULT_DEVICE, num_gpus
 from .datasets import MetaDataset, MetaDataLoader
 
 logger = logging.getLogger(__name__)
@@ -217,9 +217,6 @@ class Problyglot(object):
             else:
                 ## Basic training with just a single GPU 
                 task_name, support_batch, query_batch = batch
-
-                support_batch = move_to_device(support_batch, self.base_device)
-                query_batch = move_to_device(query_batch, self.base_device)
 
                 if self.learner_method == "platipus":
                     task_loss, (ce_loss, kl_loss) = self.learner.run_inner_loop(support_batch,
