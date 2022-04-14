@@ -9,25 +9,26 @@ from ..taskheads import ClassificationHead
 
 class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
-    def __init__(self, base_model, device, **kwargs):
+    def __init__(self, base_model, base_device, **kwargs):
         """
         BaseLearner establishes the inferface for the learner class and 
         inherents from torch.nn.Module. 
         
         Args: 
             * base_model (implements a BaseModel)
-            * device (str): what device to use for training (either 'cpu' or 'gpu) 
+            * base_device (str): what device to use for training (either 'cpu' or 'gpu) 
         """
         super().__init__()
 
         # hidden dimensions of the outputs of the base_model
+        self.base_model = base_model
         self.base_model_hidden_dim = base_model.hidden_dim 
 
-        self.device = device
+        self.base_device = base_device
 
     ###### Task head initialization methods ######
 
-    def get_task_init_kwargs(self, n_classes, **kwargs):
+    def get_task_init_kwargs(self, n_classes, device=None, **kwargs):
         """ 
         Helper method for generating keyword arguments that can be passed into a task head 
         initialization method
@@ -37,13 +38,13 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         """
 
         # The two attributes below need to be specified by the learner
-        assert(hasattr(self, 'base_model_hidden_dim') and hasattr(self, 'device'))
+        assert(hasattr(self, 'base_model_hidden_dim') and hasattr(self, 'base_device'))
 
         init_kwargs = {}
 
         init_kwargs['base_model_hidden_dim'] = self.base_model_hidden_dim
         init_kwargs['n_classes'] = n_classes
-        init_kwargs['device'] = self.device
+        init_kwargs['device'] = device if device else self.base_device 
 
         return init_kwargs
 
