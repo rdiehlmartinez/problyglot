@@ -2,8 +2,12 @@ __author__ = 'Richard Diehl Martinez'
 """ Implements a standard fully-supervised learning process (i.e. a baseline)"""
 
 import copy
-import torch
 import itertools
+import os 
+
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .base import BaseLearner
 from ..taskheads import TaskHead
@@ -27,7 +31,7 @@ class BaselineLearner(BaseLearner):
         
         super().__init__(base_model, *args, **kwargs)
 
-        self.base_model = base_model 
+        self.base_model.to(self.base_device)
 
         # setting up optimizer
         params = [p for p in base_model.parameters() if p.requires_grad]
@@ -38,8 +42,34 @@ class BaselineLearner(BaseLearner):
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
 
     ###### Model training methods ######
- 
-    def run_inner_loop(self, support_batch, query_batch=None, *args, **kwargs): 
+
+    ### Multi Processing Helper Method
+    def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, num_tasks_per_iteration):
+        """
+        Entry point for running inner loop using multiple processes
+        """
+        device = f"cuda:{rank}"
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '32432'
+        dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+        self.to(device)
+
+        ddp = DDP(self, device_ids=[rank], find_unused_parameters=True)
+
+        while True: 
+            batch = data_queue.get()[0]
+
+            task_name, support_batch, query_batch = batch
+
+            task_loss = ddp(self, support_batch, query_batch, device)
+            task_loss = task_loss/num_tasks_per_iteration
+            task_loss.backward()
+
+            loss_queue.put([task_loss.detach().item()])
+
+    ### Main Inner Training Loop 
+    def run_inner_loop(self, support_batch, query_batch=None, device=None, *args, **kwargs): 
         """ 
         Run an inner loop optimization step. Usually this is in the context of 
         meta-learning, but in the case of a baseline model an inner_loop simply amounts 
@@ -56,12 +86,20 @@ class BaselineLearner(BaseLearner):
             * query_batch [optional]: same as support_batch, but for the data of the query set.
                 This argument os optional in the case of the baseline model. If it is provided, we 
                 simply concatenate this data and the support batch data together.
+            * device: Optional string to specify a device to override base_device
 
         Returns: 
             * loss (torch.tensor): a tensor containing the loss that results from the inner loop 
         """
+        if device is None:
+            device = self.base_device
 
         self.base_model.train()
+
+        # Moving data to appropriate device
+        support_batch = move_to_device(support_batch, device)
+        if query_batch is not None:
+            query_batch = move_to_device(query_batch, device)
 
         # combine support and query batch together 
         if query_batch: 
@@ -91,10 +129,10 @@ class BaselineLearner(BaseLearner):
                         expansion_tensor_dims = (batch_size, tensor_dim_diff)
                         if key == "input_ids": 
                             expansion_tensor = torch.ones(expansion_tensor_dims,
-                                                          device=self.device)
+                                                          device=device)
                         else: 
                             expansion_tensor = torch.zeros(expansion_tensor_dims,
-                                                           device=self.device)
+                                                           device=device)
 
                         if max_seq_len_support > max_seq_len_query: 
                             # expanding query 
@@ -112,7 +150,7 @@ class BaselineLearner(BaseLearner):
             input_batch = support_batch
 
         n_classes = torch.unique(support_batch['label_ids']).numel()
-        init_kwargs = self.get_task_init_kwargs(n_classes=n_classes)
+        init_kwargs = self.get_task_init_kwargs(n_classes=n_classes, device=device)
         task_head_weights = TaskHead.initialize_task_head(task_type='classification',
                                                           method='random',
                                                           init_kwargs=init_kwargs)
@@ -167,7 +205,7 @@ class BaselineLearner(BaseLearner):
         finetune_optimizer = torch.optim.Adam(params=finetune_params)
 
         for batch_idx, data_batch in enumerate(finetune_dataloader):
-            data_batch = move_to_device(data_batch, self.device)
+            data_batch = move_to_device(data_batch, self.base_device)
             finetune_optimizer.zero_grad()
 
             # run SGD on the finetuned theta parameters
@@ -218,7 +256,7 @@ class BaselineLearner(BaseLearner):
             finetuned_model.eval()
 
             for data_batch in inference_dataloader: 
-                data_batch = move_to_device(data_batch, self.device)
+                data_batch = move_to_device(data_batch, self.base_device)
 
                 outputs = finetuned_model(input_ids=data_batch['input_ids'],
                                           attention_mask=data_batch['attention_mask'],)

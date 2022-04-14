@@ -14,10 +14,8 @@ import os
 from collections import OrderedDict
 
 import torch
-
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-
 
 from .base import BaseLearner
 from ..taskheads import TaskHead
@@ -89,8 +87,8 @@ class Platipus(BaseLearner):
                                                     requires_grad=param.requires_grad)
                                 )
             self.log_sigma_theta.append(torch.nn.Parameter(
-                                            data=torch.randn(size=param.shape).to(self.base_device)\
-                                                - 4,
+                                            data=torch.randn(size=param.shape)\
+                                                .to(self.base_device) - 4,
                                             requires_grad=param.requires_grad)
                                         )
             self.log_v_q.append(torch.nn.Parameter(
@@ -330,9 +328,19 @@ class Platipus(BaseLearner):
 
     ###### Model training methods ######
 
+    ### Multi Processing Helper Method
     def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, num_tasks_per_iteration):
         """
-        Entry point for running inner loop using multiple processes
+        Entry point for running inner loop using multiple processes. Sets up DDP init process
+        group, wraps learner in DDP and calls forward/backward on the DDP-wrapped model.
+
+        Args: 
+            * rank (int): Rank of current GPU 
+            * world_size (int): Number of GPUs should be the same as utils.num_gpus
+            * data_queue (multiprocessing.Queue): Queue from which we read passed in data
+            * loss_queue (multiprocessing.Queue): Queue to which we write loss values
+            * num_tasks_per_iteration (int): Number of tasks per iteration that the user specifies
+                in the experiment config file
         """
 
         device = f"cuda:{rank}"
@@ -350,10 +358,7 @@ class Platipus(BaseLearner):
             batch = data_queue.get()[0]
 
             task_name, support_batch, query_batch = batch
-
-            support_batch = move_to_device(support_batch, device)
-            query_batch = move_to_device(query_batch, device)
-
+            
             task_loss, (ce_loss, kl_loss) = ddp(self, support_batch, query_batch, device)
 
             task_loss = task_loss/num_tasks_per_iteration
@@ -366,15 +371,7 @@ class Platipus(BaseLearner):
                             ce_loss.detach().item(),
                             kl_loss.detach().item()]])
 
-   
-    def forward(self, learner, support_batch, query_batch, device):
-        """ 
-        NOTE: Only torch.DistributedDataParallel should indirectly call this - used as a wrapper to 
-              run_inner_loop. Unless you know what you're doing, don't call this method.
-        """
-        task_loss, (ce_loss, kl_loss) = learner.run_inner_loop(support_batch, query_batch, device)
-        return task_loss, (ce_loss, kl_loss)
-
+    ### Main Inner Training Loop 
     def run_inner_loop(self, support_batch, query_batch, device=None, *args, **kwargs): 
         """
         Implements steps 6-11 outlined in the algorithm 1 of the Platipus paper
@@ -401,6 +398,10 @@ class Platipus(BaseLearner):
             self.functionalize_model()
 
         self.functional_model.train()
+
+        # Moving data to appropriate device
+        support_batch = move_to_device(support_batch, device)
+        query_batch = move_to_device(query_batch, device)
 
         # automatically infer the number N of classes
         n_classes = torch.unique(support_batch['label_ids']).numel()

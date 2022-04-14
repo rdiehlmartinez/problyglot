@@ -22,6 +22,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
         # hidden dimensions of the outputs of the base_model
         self.base_model = base_model
+        self.base_model.to(base_device)
         self.base_model_hidden_dim = base_model.hidden_dim 
 
         self.base_device = base_device
@@ -98,9 +99,32 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         self.optimizer.step()
         if set_zero_grad:
             self.optimizer.zero_grad()
+    
+    def forward(self, learner, support_batch, query_batch, device):
+        """ 
+        NOTE: Only torch.DistributedDataParallel should indirectly call this - used as a wrapper to 
+              run_inner_loop. Unless you know what you're doing, don't call this method.
+        """
+        return learner.run_inner_loop(support_batch, query_batch, device)
 
     @abc.abstractmethod
-    def run_inner_loop(self, support_batch, query_batch=None, *args, **kwargs): 
+    def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, num_tasks_per_iteration):
+        """
+        Entry point for running inner loop using multiple processes. Sets up DDP init process
+        group, wraps learner in DDP and calls forward/backward on the DDP-wrapped model.
+
+        Args: 
+            * rank (int): Rank of current GPU 
+            * world_size (int): Number of GPUs should be the same as utils.num_gpus
+            * data_queue (multiprocessing.Queue): Queue from which we read passed in data
+            * loss_queue (multiprocessing.Queue): Queue to which we write loss values
+            * num_tasks_per_iteration (int): Number of tasks per iteration that the user specifies
+                in the experiment config file
+        """
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def run_inner_loop(self, support_batch, query_batch=None, device=None, **kwargs): 
         """ 
         Run an inner loop optimization step (in the context of meta learning); assumes 
         that the class contains the model that is to-be meta-learned.
@@ -115,6 +139,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
                     not pad tokens
             * query_batch [optional]: Same as support_batch, but for the data of the query set.
                 This argument might be optional depending on how the learner is implemented.
+            * device: Optional string to specify a device to override base_device
 
         Returns: 
             * loss (torch.tensor): A tensor containing the loss that results from the inner loop 
