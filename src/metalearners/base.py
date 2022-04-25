@@ -1,9 +1,13 @@
 __author__ = 'Richard Diehl Martinez'
-''' Base ABC Class for (meta) learners '''
+""" Base ABC Class for (meta) learners """
 
 import abc 
-import torch
+import os
 import math
+
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from ..taskheads import ClassificationHead
 
@@ -107,6 +111,29 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         """
         return learner.run_inner_loop(support_batch, query_batch, device)
 
+    def setup_DDP(self, rank, world_size):
+        """ 
+        Helper method for setting up distributed data parallel process group and returning 
+        a wrapper DDP instance of the learner
+        
+        Args: 
+            * rank (int): Rank of current GPU 
+            * world_size (int): Number of GPUs should be the same as utils.num_gpus
+
+        Returns:
+            * device (int): Device to run model on
+            * ddp (torch.DistributedDataParallel): Wrapped DDP learner
+        """
+        device = f"cuda:{rank}"
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '32432'
+        dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+        self.to(device)
+
+        ddp = DDP(self, device_ids=[rank], find_unused_parameters=True)
+        return (device, ddp)
+
     @abc.abstractmethod
     def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, num_tasks_per_iteration):
         """
@@ -118,6 +145,8 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
             * world_size (int): Number of GPUs should be the same as utils.num_gpus
             * data_queue (multiprocessing.Queue): Queue from which we read passed in data
             * loss_queue (multiprocessing.Queue): Queue to which we write loss values
+            * step_optimizer (multiprocessing.Event): Event to signal workers to take an optimizer
+                step
             * num_tasks_per_iteration (int): Number of tasks per iteration that the user specifies
                 in the experiment config file
         """

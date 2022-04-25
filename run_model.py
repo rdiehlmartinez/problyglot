@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-''' Entry point for launching problyglot '''
+""" Entry point for launching problyglot """
 
 import argparse
 import torch.multiprocessing as mp

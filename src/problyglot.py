@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-''' Wrapper class for training and evaluating a model using a given meta learning technique '''
+""" Wrapper class for training and evaluating a model using a given meta learning technique """
 
 import typing
 import torch
@@ -163,11 +163,13 @@ class Problyglot(object):
             data_queue = spawn_context.Queue()
             loss_queue = spawn_context.Queue()
 
+            step_optimizer = spawn_context.Event()
+
             gpu_workers = []
             for rank in range(num_gpus):
                 p = spawn_context.Process(target=self.learner.run_inner_loop_mp,
                                           args=(rank, num_gpus, data_queue, loss_queue,
-                                                num_tasks_per_iteration  
+                                                step_optimizer, num_tasks_per_iteration  
                                                )
                                           )
                 p.start()
@@ -237,12 +239,12 @@ class Problyglot(object):
                     task_batch_kl_loss += kl_loss.detach().item()
 
             if ((batch_idx + 1) % num_tasks_per_iteration == 0):
-                if num_gpus > 1: 
+                #### NOTE: Just finished a batch of tasks 
 
+                if num_gpus > 1: 
                     while True:
-                        # Simple but semi-inefficient way of waiting for all processes to finish
-                        # computing gradients
-                        time.sleep(2)
+                        # Waiting for all processes to finish computing gradients
+                        time.sleep(1)
                         if loss_queue.qsize() == num_tasks_per_iteration:
                             break
 
@@ -261,10 +263,17 @@ class Problyglot(object):
                         
                         task_batch_loss += task_loss
                                                 
-                # NOTE: We just finished one global meta task batch (batch of tasks)
+                ##### NOTE: Taking a global (meta) update step
                 num_task_batches += 1
-
-                self.learner.optimizer_step(set_zero_grad=True)
+                if num_gpus > 1: 
+                    # informing/waiting for workers to all take an optimizer step 
+                    step_optimizer.set()
+                    while step_optimizer.is_set():
+                        time.sleep(1)
+                else: 
+                    self.learner.optimizer_step(set_zero_grad=True)
+                
+                ### Logging out training results
                 logger.info(f"No. batches of tasks processed: {num_task_batches}")
                 logger.info(f"\t(Meta) training loss: {task_batch_loss}")
                 if self.use_wandb:
@@ -288,14 +297,14 @@ class Problyglot(object):
                     task_batch_ce_loss = 0
                     task_batch_kl_loss = 0
 
-                # possibly run evaluation of the model
+                ### possibly run evaluation of the model
                 if (eval_every_n_iteration and num_task_batches % eval_every_n_iteration == 0):
                     self.evaluator.run(self.learner, num_task_batches=num_task_batches)
 
                 if (num_task_batches % max_task_batch_steps == 0):
                     # NOTE: stop training if we've done max_task_batch_steps global update steps
                     break
-        
+
         ### Model done training - final clean up before exiting 
 
         logger.info("Finished training model")
@@ -310,11 +319,11 @@ class Problyglot(object):
                 }
                 torch.save(checkpoint, os.path.join(wandb.run.dir, f"final.pt"))
 
-        logger.info("Shutting down meta dataloader workers")
         self.meta_dataset.shutdown()
 
         # Shut down workers if using multiple GPUs
         if num_gpus > 1: 
+            logger.info("Shutting down GPU workers used for model training")
             for p in gpu_workers:
                 p.terminate()
                 p.join()

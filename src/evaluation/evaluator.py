@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-''' Orchestration of model evaluation '''
+""" Orchestration of model evaluation """
 
 import logging
 import os

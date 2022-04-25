@@ -1,21 +1,20 @@
 __author__ = 'Richard Diehl Martinez'
-
 """
 Implementation of the platipus model, proposed by Finn et el. https://arxiv.org/pdf/1806.02817.pdf
 
 Code adapted from: https://github.com/cnguyen10/few_shot_meta_learning
 """
 
-import typing
+import time
 import higher 
 import logging
 import itertools
-import os
+
 from collections import OrderedDict
+from multiprocessing.queues import Empty as EmptyQueue
 
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .base import BaseLearner
 from ..taskheads import TaskHead
@@ -132,7 +131,7 @@ class Platipus(BaseLearner):
     def meta_params_iter(self):
         """ Returns an iterator over all of the meta parameters"""
         return itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q,
-                                [self.gamma_p, self.gamma_q,self.inner_lr, self.classifier_lr])
+                                [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr])
 
     def parameters(self):
         """ Overriding parent behavior to only return meta parameters """
@@ -329,7 +328,8 @@ class Platipus(BaseLearner):
     ###### Model training methods ######
 
     ### Multi Processing Helper Method
-    def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, num_tasks_per_iteration):
+    def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, step_optimizer, 
+                          num_tasks_per_iteration):
         """
         Entry point for running inner loop using multiple processes. Sets up DDP init process
         group, wraps learner in DDP and calls forward/backward on the DDP-wrapped model.
@@ -339,26 +339,41 @@ class Platipus(BaseLearner):
             * world_size (int): Number of GPUs should be the same as utils.num_gpus
             * data_queue (multiprocessing.Queue): Queue from which we read passed in data
             * loss_queue (multiprocessing.Queue): Queue to which we write loss values
+            * step_optimizer (multiprocessing.Event): Event to signal workers to take an optimizer
+                step
             * num_tasks_per_iteration (int): Number of tasks per iteration that the user specifies
                 in the experiment config file
         """
 
-        device = f"cuda:{rank}"
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '32432'
-        dist.init_process_group("nccl", rank=rank, world_size=world_size)
-
-        self.to(device)
-
-        ddp = DDP(self, device_ids=[rank], find_unused_parameters=True)
+        device, ddp = self.setup_DDP(rank, world_size)
 
         self.functionalize_model()
 
         while True: 
-            batch = data_queue.get()[0]
+            # The main process sends signal to update optimizers
+
+            while True: 
+                # Waiting for the next batch of data 
+                # NOTE: If there is no data either 1) the dataloading pipeline is taking a while 
+                # or 2) the main process is waiting for all the workers to finish 
+                try:
+                    batch = data_queue.get(block=False)[0]
+                    break
+                except EmptyQueue: 
+                    pass
+
+                if step_optimizer.is_set():
+                    # make sure all workers have taken an optimizer step
+                    self.optimizer_step(set_zero_grad=True)
+                    dist.barrier()
+
+                    # once all workers have update params clear the flag to continue training
+                    step_optimizer.clear()
+
+                time.sleep(1) 
 
             task_name, support_batch, query_batch = batch
-            
+
             task_loss, (ce_loss, kl_loss) = ddp(self, support_batch, query_batch, device)
 
             task_loss = task_loss/num_tasks_per_iteration

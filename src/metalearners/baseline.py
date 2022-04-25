@@ -3,11 +3,12 @@ __author__ = 'Richard Diehl Martinez'
 
 import copy
 import itertools
-import os 
+import time
+
+from multiprocessing.queues import Empty as EmptyQueue
 
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .base import BaseLearner
 from ..taskheads import TaskHead
@@ -44,21 +45,46 @@ class BaselineLearner(BaseLearner):
     ###### Model training methods ######
 
     ### Multi Processing Helper Method
-    def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, num_tasks_per_iteration):
+    def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, step_optimizer,
+                          num_tasks_per_iteration):
         """
-        Entry point for running inner loop using multiple processes
+        Entry point for running inner loop using multiple processes. Sets up DDP init process
+        group, wraps learner in DDP and calls forward/backward on the DDP-wrapped model.
+
+        Args: 
+            * rank (int): Rank of current GPU 
+            * world_size (int): Number of GPUs should be the same as utils.num_gpus
+            * data_queue (multiprocessing.Queue): Queue from which we read passed in data
+            * loss_queue (multiprocessing.Queue): Queue to which we write loss values
+            * step_optimizer (multiprocessing.Event): Event to signal workers to take an optimizer
+                step
+            * num_tasks_per_iteration (int): Number of tasks per iteration that the user specifies
+                in the experiment config file
         """
-        device = f"cuda:{rank}"
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '32432'
-        dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
-        self.to(device)
-
-        ddp = DDP(self, device_ids=[rank], find_unused_parameters=True)
+        device, ddp = self.setup_DDP(rank, world_size)
 
         while True: 
-            batch = data_queue.get()[0]
+
+            while True: 
+                # Waiting for the next batch of data 
+                # NOTE: If there is no data either 1) the dataloading pipeline is taking a while 
+                # or 2) the main process is waiting for all the workers to finish 
+                try:
+                    batch = data_queue.get(block=False)[0]
+                    break
+                except EmptyQueue: 
+                    pass
+
+                if step_optimizer.is_set():
+                    # make sure all workers have taken an optimizer step
+                    self.optimizer_step(set_zero_grad=True)
+                    dist.barrier()
+
+                    # once all workers have update params clear the flag to continue training
+                    step_optimizer.clear()
+
+                time.sleep(1) 
 
             task_name, support_batch, query_batch = batch
 
@@ -127,6 +153,8 @@ class BaselineLearner(BaseLearner):
                             batch_size = support_batch_tensor.size(0)
 
                         expansion_tensor_dims = (batch_size, tensor_dim_diff)
+                        # NOTE: if expanding input_ids we use 1 to indicate pad;
+                        #       or 0 to indicate pad if using attention_mask
                         if key == "input_ids": 
                             expansion_tensor = torch.ones(expansion_tensor_dims,
                                                           device=device)

@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez '
-''' Utilities for dataloading a MetaDataset '''
+""" Utilities for dataloading a MetaDataset """
 
 import torch
 
