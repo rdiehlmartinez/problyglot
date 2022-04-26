@@ -4,13 +4,20 @@ __author__ = 'Richard Diehl Martinez'
 import logging
 import os
 
+from collections import defaultdict
+
 from torch.utils.data import IterableDataset
 from transformers import XLMRobertaTokenizer
+
+from .metadataset import IterableLanguageTaskDataset
 
 logger = logging.getLogger(__name__)
 
 # We always use the XLM sentencepiece tokenizer
 tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
+
+# static method for generating N-way k-shot self-supervised meta learning tasks 
+generate_N_K_samples = IterableLanguageTaskDataset.generate_N_K_samples
 
 # to stop the huggingface tokenizer from giving the sequence longer than 512 warning 
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
@@ -52,6 +59,15 @@ class XNLIDatasetGenerator():
         self.adapt_on_eval = config.getboolean("XNLI", "adapt_on_eval", fallback=True)
 
         self.language_files = self._get_language_files(self.root_path)
+
+        self.task_head_init_method = config.get("XNLI", "task_head_init_method", fallback="random")
+
+        # when using the platipus meta-learning method, we need to generate a language task for
+        # model adaptation - thus we need to store the config specifying language task generation
+        if config.get("LEARNER", "method") == "platipus": 
+            self.language_task_kwargs = dict(config.items("LANGUAGE_TASK"))
+        else: 
+            self.language_task_kwargs = None
 
     def _get_language_files(self, root_path):
         """ 
@@ -115,8 +131,10 @@ class XNLIDatasetGenerator():
                                     and language_file_dict['finetune'][0] != "en"
 
             finetune_dataset = XNLIDataset(*language_file_dict['finetune'],
+                                           language_task_kwargs=self.language_task_kwargs,
                                            translated=finetune_translated)
-            evaluation_dataset = XNLIDataset(*language_file_dict['evaluation'])
+            evaluation_dataset = XNLIDataset(*language_file_dict['evaluation'],
+                                             language_task_kwargs=self.language_task_kwargs)
 
             yield (finetune_dataset, evaluation_dataset)
 
@@ -136,7 +154,7 @@ class XNLIDataset(IterableDataset):
     For batching, XNLIDataset expects to use an NLUDataLoader.
     """
 
-    def __init__(self, lng, file_path, translated=False): 
+    def __init__(self, lng, file_path, language_task_kwargs=None, translated=False): 
         """
         For a given language string and data filepath, creates a Dataset that 
         iterates over and preprocesses the XNLI data for that language. 
@@ -146,13 +164,18 @@ class XNLIDataset(IterableDataset):
         self._lng = lng
         self.file_path = file_path
 
+        self.language_task_kwargs = language_task_kwargs
         self.translated = translated
 
     @property
     def language(self):
         return self._lng
 
-    def preprocess_line(self, line):
+    def preprocess_line(self, line, process_for_adaptation=False):
+        """
+        TODO
+        """
+
         # splitting information from tsv
         split_line = line.split('\t')
 
@@ -167,16 +190,73 @@ class XNLIDataset(IterableDataset):
             text_b = split_line[1]
             label = split_line[2].strip()
 
-        # tokenizing inputs
-        inputs = tokenizer.encode_plus(text_a,
-                                       text_b,
-                                       add_special_tokens=True,
-                                       max_length=XNLIDataset.MAX_SEQ_LENGTH)
-        
-        input_ids = inputs['input_ids']
-        label_id = XNLIDataset.LABEL_MAP[label]
+        if process_for_adaptation: 
+            text_a_token_ids = tokenizer.encode(text_a)
+            text_b_token_ids = tokenizer.encode(text_b)
+            return (text_a_token_ids, text_b_token_ids)
+        else:
+            # tokenizing inputs
+            inputs = tokenizer.encode_plus(text_a, text_b, add_special_tokens=True,
+                                           max_length=XNLIDataset.MAX_SEQ_LENGTH)
+            
+            input_ids = inputs['input_ids']
+            label_id = XNLIDataset.LABEL_MAP[label]
 
-        return [input_ids, label_id]
+            return [input_ids, label_id]
+
+    def get_adaptation_batch(self):
+        """ Sample a batch of data to perform model adaptation on"""
+
+        curr_samples_processed = 0 
+        curr_samples = []
+        curr_subword_to_sample = defaultdict(list)
+
+        max_seq_len = int(self.language_task_kwargs["max_seq_len"])
+        sample_size = int(self.language_task_kwargs["sample_size"])
+
+        N = int(self.language_task_kwargs["n"])
+        K = int(self.language_task_kwargs["k"])
+        Q = 0 
+        mask_sampling_method = self.language_task_kwargs["mask_sampling_method"]
+        mask_sampling_prop_rate = float(self.language_task_kwargs["mask_sampling_prop_rate"])
+
+        with open(self.file_path, 'r') as f:
+            for line in f: 
+                for token_ids in self.preprocess_line(line, True):
+                    # returns tuple of (text_a_token_ids, text_b_token_ids)
+
+                    if len(token_ids) > max_seq_len:
+                        continue
+                        
+                    curr_samples.append(token_ids)
+
+                    for idx, token_id in enumerate(token_ids): 
+                        if token_id in tokenizer.all_special_ids:
+                            # don't include special tokens 
+                            continue
+                        
+                        curr_subword_to_sample[token_id].append((curr_samples_processed, idx))
+                
+                    curr_samples_processed += 1 
+
+                    if curr_samples_processed == sample_size:
+
+                        support_set, _ = generate_N_K_samples(curr_subword_to_sample,
+                                                                curr_samples, N, K, Q,
+                                                                mask_sampling_method,
+                                                                mask_sampling_prop_rate,
+                                                                self.language)
+                        return support_set 
+        
+        # we only get here if there are not enough samples 
+        logger.warning( 
+            f"Dataset for XNLI (language: {self.language}) contains < {sample_size} samples"
+        )
+        support_set, _ = generate_N_K_samples(curr_subword_to_sample, curr_samples, N, K, Q,
+                                              mask_sampling_method, mask_sampling_prop_rate,
+                                              self.language)
+        return support_set 
+
 
     def __iter__(self): 
         """ IterableDataset expects __iter__ to be overriden"""
@@ -194,15 +274,37 @@ def main():
 
     config = ConfigParser()
     config.add_section('XNLI')
-    config.set('XNL', 'root_path', '../../data/xtreme/download/xnli')
+    config.set('XNLI', 'root_path', '../../data/xtreme/download/xnli')
     config.set('XNLI', 'use_few_shot_adaptation', 'True')
+
+
+    config.add_section('LEARNER')
+    config.set('LEARNER', 'method', 'platipus')
+
+    config.add_section('LANGUAGE_TASK')
+    config.set('LANGUAGE_TASK', 'n', '2')
+    config.set('LANGUAGE_TASK', 'k', '1')
+    config.set('LANGUAGE_TASK', 'q', '20')
+    config.set('LANGUAGE_TASK', 'sample_size', '10_000')
+    config.set('LANGUAGE_TASK', 'buffer_size', '100_000_000')
+    config.set('LANGUAGE_TASK', 'mask_sampling_method', 'proportional')
+    config.set('LANGUAGE_TASK', 'mask_sampling_prop_rate', '0.3')
+    config.set('LANGUAGE_TASK', 'max_seq_len', '128')
 
     dataset_generator = XNLIDatasetGenerator(config)
 
     for finetune_dataset, evaluation_dataset in dataset_generator:
+        
+        adaptation_batch = finetune_dataset.get_adaptation_batch()
 
-        finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=1280) 
-        evaluation_dataloader = NLUDataLoader(evaluation_dataset, batch_size=3)
+        print(adaptation_batch)
+        exit()
+        # for entry in finetune_dataset:
+        #     print(entry)
+        #     exit()
+
+        # finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=1280) 
+        # evaluation_dataloader = NLUDataLoader(evaluation_dataset, batch_size=3)
 
 if __name__ == '__main__':
     main()

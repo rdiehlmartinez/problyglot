@@ -336,7 +336,9 @@ class IterableLanguageTaskDataset(object):
 
         return file_paths
 
-    def generate_N_K_samples(self, curr_subword_to_sample, curr_samples):
+    @staticmethod
+    def generate_N_K_samples(curr_subword_to_sample, curr_samples, N, K, Q, mask_sampling_method,
+                             mask_sampling_prop_rate, language):
         """
         Given a set of samples (curr_samples) drawn from the dataset generates a 
         sample for N-way K-shot classification support set + Q samples for the query set 
@@ -351,7 +353,7 @@ class IterableLanguageTaskDataset(object):
             * curr_samples [List]: A list of self.sample_size number of samples 
 
         Returns: 
-            * support_set {token id: [K ssamples where token id occurs]}: mapping of N token ids 
+            * support_set {token id: [K samples where token id occurs]}: mapping of N token ids 
                 to K samples per token id occurs
             * query_set {token id: [Q samples where token id occurs]}: mapping of N token ids 
                 to Q samples per token id occurs
@@ -363,31 +365,31 @@ class IterableLanguageTaskDataset(object):
 
         # Filter out words that do not occur K times 
         filtered_subword_to_sample = {
-            k: v for k,v in curr_subword_to_sample.items() if len(v) >= (self.K + self.Q)
+            k: v for k,v in curr_subword_to_sample.items() if len(v) >= (K + Q)
         }
 
         # Checking whether the dataset is too small
         try: 
-            assert(len(filtered_subword_to_sample) > self.N)
+            assert(len(filtered_subword_to_sample) > N)
         except AssertionError:
-            logger.exception(f"Cannot generate N * (K+Q) samples for dataset: {self.language}")
+            logger.exception(f"Cannot generate N * (K+Q) samples for dataset: {language}")
             logger.exception(f"Max possible N is: {len(filtered_subword_to_sample)}")
             raise             
 
         # sampling mechanism for getting the N classes
-        if self.mask_sampling_method == 'random': 
-            sampled_N = random.sample(filtered_subword_to_sample.keys(), k=self.N)
-        elif self.mask_sampling_method == 'proportional':
+        if mask_sampling_method == 'random': 
+            sampled_N = random.sample(filtered_subword_to_sample.keys(), k=N)
+        elif mask_sampling_method == 'proportional':
             # samples n ~ U(n)^mask_sampling_prop_rate
-            sampling_weights = np.array([len(v)**self.mask_sampling_prop_rate
+            sampling_weights = np.array([len(v)**mask_sampling_prop_rate
                                             for v in filtered_subword_to_sample.values()])
             sampling_weights = sampling_weights/np.sum(sampling_weights)
-            sampled_N = np.random.choice(list(filtered_subword_to_sample.keys()), self.N,
+            sampled_N = np.random.choice(list(filtered_subword_to_sample.keys()), N,
                                          replace=False, p=sampling_weights)
             sampled_N = sampled_N.tolist()
         else: 
-            logger.exception(f"Invalid mask sampling method: {self.mask_sampling_method}")
-            raise Exception(f"Invalid mask sampling method: {self.mask_sampling_method}")
+            logger.exception(f"Invalid mask sampling method: {mask_sampling_method}")
+            raise Exception(f"Invalid mask sampling method: {mask_sampling_method}")
 
 
         def mask_sample(k_index_information):
@@ -412,13 +414,13 @@ class IterableLanguageTaskDataset(object):
             # so we need to specify which token it is we want to mask
             subword_indices = filtered_subword_to_sample[sampled_n]
 
-            sampled_K_plus_Q_indices = random.sample(subword_indices, k=(self.K + self.Q))
+            sampled_K_plus_Q_indices = random.sample(subword_indices, k=(K + Q))
 
-            for k_index_information in sampled_K_plus_Q_indices[:self.K]:
+            for k_index_information in sampled_K_plus_Q_indices[:K]:
                 masked_sample = mask_sample(k_index_information)
                 support_set[sampled_n].append(masked_sample)
 
-            for q_index_information in sampled_K_plus_Q_indices[self.K:]:
+            for q_index_information in sampled_K_plus_Q_indices[K:]:
                 masked_sample = mask_sample(q_index_information)
                 query_set[sampled_n].append(masked_sample)
 
@@ -509,9 +511,12 @@ class IterableLanguageTaskDataset(object):
                         if curr_samples_processed == self.sample_size: 
                             # done reading in all of the data 
                             support_set, query_set = self.generate_N_K_samples(
-                                                                            curr_subword_to_sample,
-                                                                            curr_samples
-                                                                            )
+                                                                    curr_subword_to_sample,
+                                                                    curr_samples,
+                                                                    self.N, self.K, self.Q,
+                                                                    self.mask_sampling_method,
+                                                                    self.mask_sampling_prop_rate,
+                                                                    self.language)
 
                             # writing data out to buffer 
                             try:
@@ -542,7 +547,11 @@ class IterableLanguageTaskDataset(object):
                 # we have looped over entire dataset before sampling sample_size samples
 
                 support_set, query_set = self.generate_N_K_samples(curr_subword_to_sample,
-                                                                   curr_samples)
+                                                                   curr_samples,
+                                                                   self.N, self.K, self.Q,
+                                                                   self.mask_sampling_method,
+                                                                   self.mask_sampling_prop_rate,
+                                                                   self.language)
 
                 # writing data out to buffer 
                 try:
