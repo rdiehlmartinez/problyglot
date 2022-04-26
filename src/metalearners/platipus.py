@@ -33,8 +33,9 @@ class Platipus(BaseLearner):
                                     kl_weight=0.5,
                                     num_inner_steps=5,
                                     use_first_order=False,
-                                    task_embedding_method='val_grad',
-                                    task_cls_init_method='random',
+                                    language_embedding_method='val_grad',
+                                    language_head_init_method='random',
+                                    lm_head_n=5,
                                     *args,
                                     **kwargs):
         """
@@ -65,12 +66,15 @@ class Platipus(BaseLearner):
             * num_inner_steps (int): Number of gradients steps in the inner looop
             * use_first_order (bool): Whether a first order approximation of higher-order gradients
                 should be used (defaults to False)
-            * task_embedding_method (str): How to represent the task embedding that is used to
-                condition the task-dependent probability distribution from which we sample weights
-                for a given task (defaults to 'val_grad'). 'Val_grad' is the implicit method used
-                in the platipus paper. 
-            * task_cls_init_method (str): How to initialize the final task classifier layer
-                (either 'random' or 'protomaml'). 
+            * language_embedding_method (str): How to represent the embedding that is used to
+                condition the language-dependent probability distribution from which we sample
+                weights for a given language (defaults to 'val_grad'). 'Val_grad' is the implicit 
+                method used in the platipus paper. 
+            * language_head_init_method (str): How to initialize the language head classifier layer
+            * lm_head_n (int): Size of n-way classification used for generating the language 
+                modeling tasks used for training and conditioning the platipus model on a 
+                given language  
+
         """
 
         super().__init__(base_model, *args, **kwargs)
@@ -102,6 +106,13 @@ class Platipus(BaseLearner):
         self.classifier_lr = torch.nn.Parameter(data=torch.tensor(float(classifier_lr))\
                                 .to(self.base_device))
 
+        # getting the key, parameter from initialize task head 
+        self.lm_head_n = lm_head_n
+        init_kwargs = self.get_task_init_kwargs(n_classes=lm_task_n)
+        self.lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                     method=language_head_init_method,
+                                                     init_kwargs=init_kwargs)
+
         # loading in meta optimizer 
         self.meta_lr = float(meta_lr)
         if optimizer_type == 'adam': 
@@ -130,7 +141,7 @@ class Platipus(BaseLearner):
 
     def meta_params_iter(self):
         """ Returns an iterator over all of the meta parameters"""
-        return itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q,
+        return itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, self.lm_head,
                                 [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr])
 
     def parameters(self):
@@ -175,7 +186,7 @@ class Platipus(BaseLearner):
                 "Use of protomaml as a classification head initializer requires a data_batch"
 
             init_kwargs['functional_model'] = self.functional_model
-            init_kwargs['params'] = self.mu_theta.to(device)
+            init_kwargs['params'] = self.mu_theta
             init_kwargs['data_batch'] = data_batch
 
         return init_kwargs
@@ -237,7 +248,7 @@ class Platipus(BaseLearner):
             return sampled_weights  
 
     # adaptation to classification tasks (e.g. the meta-training task is a classification task)
-    def _adapt_params_classification(self, data_batch, params, task_head_weights, learning_rate,
+    def _adapt_params_classification(self, data_batch, params, lm_head_weights, learning_rate,
                                      optimize_classifier=False, clone_params=True,
                                      evaluation_mode=False):
         """ 
@@ -257,8 +268,7 @@ class Platipus(BaseLearner):
                 (see run_inner_loop for information on the data structure)
             * params (iterable): Iterable of torch.nn.Paramater()s
                 (the params that we want to evaluate our model at)
-            * task_head_weights (dict): Weights of the final classification head (these are not 
-                meta-learned) 
+            * lm_head_weights (dict): Weights of the lm classification head
             * learning_rate (float): The internal learning rate used to update params
             * optimize_classifier (bool): Whether to train the final classification layer. 
             * clone_params (bool): Whether to clone the params passed in (defaults to True)
@@ -283,7 +293,7 @@ class Platipus(BaseLearner):
                                                     attention_mask=data_batch['attention_mask'],
                                                     params=adapted_params)
 
-            _, loss = self._compute_task_loss(outputs, data_batch, task_head_weights,
+            _, loss = self._compute_task_loss(outputs, data_batch, lm_head_weights,
                                               task_type='classification')
                                                         
             # Computing resulting gradients of the inner loop
@@ -310,17 +320,15 @@ class Platipus(BaseLearner):
                     grad_counter += 1
 
             # optionally use SGD to update the weights of the final linear classification layer
+            # should only be done once we've already sampled phi weights
             if optimize_classifier:
-        
                 classifier_grads = torch.autograd.grad(
                     outputs=loss,
-                    inputs=[task_head_weights["weight"], task_head_weights["bias"]],
+                    inputs=lm_head_weights.values(),
                 )
-
-                task_head_weights["weight"] = task_head_weights["weight"] - \
-                                                self.classifier_lr * classifier_grads[0]
-                task_head_weights["bias"] =  task_head_weights["bias"] - \
-                                                self.classifier_lr * classifier_grads[1]
+                for idx, weight_name in enumerate(lm_head_weights.keys()):
+                    lm_head_weights[weight_name] = lm_head_weights[weight_name] - \
+                                                    self.classifier_lr * classifier_grads[idx]
 
         return adapted_params
 
@@ -417,26 +425,16 @@ class Platipus(BaseLearner):
         # Moving data to appropriate device
         support_batch = move_to_device(support_batch, device)
         query_batch = move_to_device(query_batch, device)
-
-        # automatically infer the number N of classes
-        n_classes = torch.unique(support_batch['label_ids']).numel()
-
-        task_init_data_batch = support_batch if 'protomaml' in self.task_cls_init_method else None
-        init_kwargs = self.get_task_init_kwargs(n_classes=n_classes,
-                                                data_batch=task_init_data_batch,
-                                                device=device)
        
-        task_head_weights = TaskHead.initialize_task_head(task_type='classification',
-                                                          method=self.task_cls_init_method,
-                                                          init_kwargs=init_kwargs)
-
+        # cloning LM head in order to be locally adapted
+        adapted_lm_head = torch.clone(self.lm_head)
 
         # sampling theta after adapting model to query_batch
         mu_theta_query, theta = self._sample_adapted_weights(query_batch, 
                                                              sampling_std=self.log_v_q,
                                                              return_adapted_mean=True,
                                                              params=self.mu_theta,
-                                                             task_head_weights=task_head_weights,
+                                                             lm_head_weights=adapted_lm_head,
                                                              learning_rate=self.gamma_q,
                                                              clone_params=True,
                                                              device=device)
@@ -444,7 +442,7 @@ class Platipus(BaseLearner):
         # adapting theta to the support set -> adapted params are phi
         phi = self._adapt_params_classification(support_batch, 
                                                 params=theta, 
-                                                task_head_weights=task_head_weights,
+                                                lm_head_weights=adapted_lm_head,
                                                 learning_rate=self.inner_lr,
                                                 clone_params=False,
                                                 optimize_classifier=True)
@@ -458,7 +456,7 @@ class Platipus(BaseLearner):
 
         self.functional_model.train()
 
-        _, ce_loss = self._compute_task_loss(outputs, query_batch, task_head_weights, 
+        _, ce_loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
                                              task_type='classification')
 
         # computing KL loss (requires adapting mu_theta to the support set)
@@ -466,7 +464,7 @@ class Platipus(BaseLearner):
         # mu theta adapted to the support set (line 10 from algorithm 1) 
         mu_theta_support = self._adapt_params_classification(support_batch, 
                                                              params=self.mu_theta,
-                                                             task_head_weights=task_head_weights,
+                                                             lm_head_weights=self.lm_head,
                                                              learning_rate=self.gamma_p,
                                                              clone_params=True,)
 

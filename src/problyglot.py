@@ -88,6 +88,7 @@ class Problyglot(object):
         learner_kwargs = dict(self.config.items("LEARNER"))
 
         if learner_method == 'platipus':
+            learner_kwargs['lm_head_n'] = self.config.getint("LANGUAGE_TASK", "n", fallback=5)
             learner_cls = Platipus
         elif learner_method == 'baseline': 
             learner_cls = BaselineLearner
