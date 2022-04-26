@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-''' Utilities for preprocessing and loading dataset '''
+""" Utilities for preprocessing and loading dataset """
 
 import os
 import torch 
@@ -109,9 +109,9 @@ class MetaDataset(IterableDataset):
 
             dataset_size = compute_dataset_size(lng_root_fp)
 
-            language_task_dataset_kwargs = dict(config.items('LANGUAGE_TASK_DATASET'))
+            language_task_kwargs = dict(config.items('LANGUAGE_TASK'))
             dataset = IterableLanguageTaskDataset(lng_root_fp, language, seed=seed,
-                                                  **language_task_dataset_kwargs)
+                                                  **language_task_kwargs)
             
             datasets[language] = dataset
             datasets_md[language] = {"dataset_size": dataset_size} # Can add more metadata 
