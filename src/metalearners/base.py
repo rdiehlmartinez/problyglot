@@ -33,7 +33,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
     ###### Task head initialization methods ######
 
-    def get_task_init_kwargs(self, n_classes, device=None, **kwargs):
+    def get_task_init_kwargs(self, n_classes, **kwargs):
         """ 
         Helper method for generating keyword arguments that can be passed into a task head 
         initialization method
@@ -49,7 +49,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
         init_kwargs['base_model_hidden_dim'] = self.base_model_hidden_dim
         init_kwargs['n_classes'] = n_classes
-        init_kwargs['device'] = device if device else self.base_device 
+        init_kwargs['device'] = self.base_device 
 
         return init_kwargs
 

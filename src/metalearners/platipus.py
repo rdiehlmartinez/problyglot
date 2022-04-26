@@ -107,8 +107,8 @@ class Platipus(BaseLearner):
                                 .to(self.base_device))
 
         # getting the key, parameter from initialize task head 
+        init_kwargs = self.get_task_init_kwargs(language_head_init_method, n_classes=lm_head_n)
         self.lm_head_n = lm_head_n
-        init_kwargs = self.get_task_init_kwargs(n_classes=lm_task_n)
         self.lm_head = TaskHead.initialize_task_head(task_type='classification',
                                                      method=language_head_init_method,
                                                      init_kwargs=init_kwargs)
@@ -133,16 +133,13 @@ class Platipus(BaseLearner):
 
         self.use_first_order = use_first_order
 
-        self.task_embedding_method = task_embedding_method
-
-        self.task_cls_init_method = task_cls_init_method
-
     ###### Helper functions ######
 
     def meta_params_iter(self):
         """ Returns an iterator over all of the meta parameters"""
-        return itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, self.lm_head,
-                                [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr])
+        return itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, 
+                               [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr],
+                               self.lm_head.values())
 
     def parameters(self):
         """ Overriding parent behavior to only return meta parameters """
@@ -163,25 +160,22 @@ class Platipus(BaseLearner):
         return updated_state_dict
 
 
-    def get_task_init_kwargs(self, data_batch=None, device=None, **kwargs):
+    def get_task_init_kwargs(self, task_init_method, data_batch=None, **kwargs):
         """ 
         Overrides the parent's method to also include kwargs for protomaml.
 
         Args:
-            * data_batch: Batch of data for a forward pass through the model 
+            * task_init_method (str): Method for intiializing the task head
+            * data_batch (dict): Batch of data for a forward pass through the model 
                 (see run_inner_loop for information on the data structure)
-            * device: For overriding the device that the task weights should be intialized on 
-                (really only useful for multiprocessing to select a specific GPU rank)
 
         Returns:
             * init_kwargs (dict): Keyword arguments used by the initialization function 
         """
-        if device is None:
-            device = self.base_device
 
-        init_kwargs = super().get_task_init_kwargs(device=device, **kwargs)
+        init_kwargs = super().get_task_init_kwargs(**kwargs)
         
-        if 'protomaml' in self.task_cls_init_method:
+        if 'protomaml' in task_init_method:
             assert(data_batch is not None),\
                 "Use of protomaml as a classification head initializer requires a data_batch"
 
@@ -414,7 +408,9 @@ class Platipus(BaseLearner):
         Returns: 
             * loss (torch.Tensor): Loss value of the inner loop calculations
         """
-        
+        if device is None:
+            device = self.base_device
+
         if not hasattr(self, "functional_model"):
             # If not using multiprocessing training, the first iteration of run_inner_loop
             # will have to functionalize the model 
@@ -427,7 +423,7 @@ class Platipus(BaseLearner):
         query_batch = move_to_device(query_batch, device)
        
         # cloning LM head in order to be locally adapted
-        adapted_lm_head = torch.clone(self.lm_head)
+        adapted_lm_head = {key: torch.clone(param) for key, param in self.lm_head.items()}
 
         # sampling theta after adapting model to query_batch
         mu_theta_query, theta = self._sample_adapted_weights(query_batch, 
