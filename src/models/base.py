@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-'''Base ABC class interface for base models '''
+""" Base ABC class interface for base models """
 
 import abc 
 

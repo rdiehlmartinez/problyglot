@@ -1,4 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
+""" Base class for task heads """
 
 import abc 
 import logging

@@ -25,6 +25,7 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR
 # We always use the XLM sentencepiece tokenizer
 tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
 MASK_TOKEN_ID = tokenizer.mask_token_id 
+SPECIAL_TOKEN_IDS = tokenizer.all_special_ids
 
 # to encode any token id we need BYTE_ENCODING_SIZE number of bytes (hex encoding)
 BYTE_ENCODING_SIZE = math.ceil(math.log(tokenizer.vocab_size + 1, 16)) 
@@ -499,7 +500,7 @@ class IterableLanguageTaskDataset(object):
 
                             curr_samples.append(token_ids)
                             for idx, token_id in enumerate(token_ids):
-                                if token_id in tokenizer.all_special_ids:
+                                if token_id in SPECIAL_TOKEN_IDS:
                                     # don't include special tokens 
                                     continue
                                 curr_subword_to_sample[token_id].append((curr_samples_processed,

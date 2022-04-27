@@ -145,7 +145,10 @@ class Platipus(BaseLearner):
 
     # Overriding nn.Module functionality 
     def state_dict(self):
-        """ Overriding method to remove placeholder parameters defined by functional model"""
+        """
+        Overriding method to remove placeholder parameters defined by functional model. Called 
+        implicitly when saving and loading checkpoints.
+        """
         original_state_dict = super().state_dict()
         updated_state_dict = OrderedDict()
 
@@ -159,7 +162,7 @@ class Platipus(BaseLearner):
 
     def get_task_init_kwargs(self, task_init_method, data_batch=None, **kwargs):
         """ 
-        Overrides the parent's method to also include kwargs for protomaml.
+        Override to also include kwargs for protomaml.
 
         Args:
             * task_init_method (str): Method for initializing the task head

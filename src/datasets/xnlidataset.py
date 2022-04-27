@@ -6,28 +6,23 @@ import os
 
 from collections import defaultdict
 
-from torch.utils.data import IterableDataset
 from transformers import XLMRobertaTokenizer
 
-from .metadataset import IterableLanguageTaskDataset
-from .metadataloader import meta_collate
+from .nludataset import NLUDatasetGenerator, NLUDataset
 
 logger = logging.getLogger(__name__)
 
 # We always use the XLM sentencepiece tokenizer
 tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
 
-# static method for generating N-way k-shot self-supervised meta learning tasks 
-generate_N_K_samples = IterableLanguageTaskDataset.generate_N_K_samples
-
 # to stop the huggingface tokenizer from giving the sequence longer than 512 warning 
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
 
-class XNLIDatasetGenerator():
+class XNLIDatasetGenerator(NLUDatasetGenerator):
 
     ''' 
-    A generator that yields XNLIDataset classes and contains arguments for how to run 
-    evaluation of the XNLI task.
+    A generator that yields XNLIDataset classes and contains arguments for how to setup and run 
+    evaluation of the XNLI task. 
     '''
 
     def __init__(self, config): 
@@ -55,7 +50,7 @@ class XNLIDatasetGenerator():
             assert(os.path.exists(self.translated_root_path)),\
                 "For few shot adaptation must have a translate-train directory"
 
-        # if adapt_on_eval is True, then - assuming we are using platipus - we take 
+        # NOTE: If adapt_on_eval is True, then - assuming we are using platipus - we take 
         # an adaptation step on the final evaluation dataset. If we are not using platipus, 
         # we just ignore this flag
         self.adapt_on_eval = config.getboolean("XNLI", "adapt_on_eval", fallback=True)
@@ -65,12 +60,8 @@ class XNLIDatasetGenerator():
 
         self.language_files = self._get_language_files(self.root_path)
 
-        # when using the platipus meta-learning method, we need to generate a language task for
-        # model adaptation - thus we need to store the config specifying language task generation
-        if config.get("LEARNER", "method") == "platipus": 
-            self.language_task_kwargs = dict(config.items("LANGUAGE_TASK"))
-        else: 
-            self.language_task_kwargs = None
+        super().__init__(config)
+
 
     def _get_language_files(self, root_path):
         """ 
@@ -79,8 +70,7 @@ class XNLIDatasetGenerator():
         Returns: 
             * language_files: list of dictionaries of the following format: 
                 {"finetune": (finetune language (str), finetune data file path),
-                "evaluation": (evaluation language (str), evaluation data file path),
-                }
+                "evaluation": (evaluation language (str), evaluation data file path)}
 
         """
         language_files = []
@@ -109,13 +99,14 @@ class XNLIDatasetGenerator():
                                                    translated_file_paths))[0]
                 translated_full_file_path = os.path.join(self.translated_root_path,
                                                          translated_file_path)
-                language_file_dict['finetune'] = (file_path_lng, translated_full_file_path)
+                language_file_dict['finetune'] = {"lng": file_path_lng,
+                                                  "file_path": translated_full_file_path}
             else: 
                 # if we are doing zero-shot adaptation, then we always finetune on english data
-                language_file_dict['finetune'] = (eng_lng_str, eng_file_path)
+                language_file_dict['finetune'] = {"lng": eng_lng_str, "file_path": eng_file_path}
             
             full_file_path = os.path.join(root_path, file_path)
-            language_file_dict['evaluation'] = (file_path_lng, full_file_path)
+            language_file_dict['evaluation'] = {"lng": file_path_lng, "file_path": full_file_path}
 
             language_files.append(language_file_dict)
             
@@ -131,18 +122,18 @@ class XNLIDatasetGenerator():
             # the finetuning set is translated if few shot learning is set and the current language 
             # is not english
             finetune_translated = self.use_few_shot_adaptation\
-                                    and language_file_dict['finetune'][0] != "en"
+                                    and language_file_dict['finetune']['lng'] != "en"
 
-            finetune_dataset = XNLIDataset(*language_file_dict['finetune'],
+            finetune_dataset = XNLIDataset(**language_file_dict['finetune'],
                                            language_task_kwargs=self.language_task_kwargs,
                                            translated=finetune_translated)
-            evaluation_dataset = XNLIDataset(*language_file_dict['evaluation'],
+            evaluation_dataset = XNLIDataset(**language_file_dict['evaluation'],
                                              language_task_kwargs=self.language_task_kwargs)
 
             yield (finetune_dataset, evaluation_dataset)
 
 
-class XNLIDataset(IterableDataset):
+class XNLIDataset(NLUDataset):
 
     # default value for XNLI 
     MAX_SEQ_LENGTH = 128
@@ -157,26 +148,36 @@ class XNLIDataset(IterableDataset):
     For batching, XNLIDataset expects to use an NLUDataLoader.
     """
 
-    def __init__(self, lng, file_path, language_task_kwargs=None, translated=False): 
+    def __init__(self, translated=False, **kwargs): 
         """
-        For a given language string and data filepath, creates a Dataset that 
-        iterates over and preprocesses the XNLI data for that language. 
-        The keyword arg, translated, indicates whether the data has been 
-        translated in which case the data preprocessing differs slightly.  
+        For a given language string and data filepath, establishes an IterableDataset that 
+        iterates over and processes the XNLI data for that language. The keyword arg, translated,
+        indicates whether the data has been translated in which case the data preprocessing
+        differs slightly.
         """
-        self._lng = lng
-        self.file_path = file_path
 
-        self.language_task_kwargs = language_task_kwargs
+        super().__init__(**kwargs)
         self.translated = translated
-
-    @property
-    def language(self):
-        return self._lng
 
     def preprocess_line(self, line, process_for_adaptation=False):
         """
-        TODO
+        For a given text input line, splits the line into the hypothesis and the premise; and 
+        tokenizes the two lines. If process_for_adaptation is set, returns a tuple of the two 
+        tokenized lines. Otherwise, returns the two lines tokenized into one combined list of  
+        tokens along with the corresponding label id.
+
+        Args: 
+            * line (str): Line of text 
+            * process_for_adaptation (bool): Whether to process the line for generating a batch
+                of data for model adaptation (only applicable if using platipus). 
+            
+        
+        Returns: 
+            If process_for_adaptation: 
+                * Tuple of lists corresponding to tokenized hypothesis and premise 
+            Else:
+                * input_ids (list): List of tokens of combined hypothesis and premise
+                * label_id (int): Label for the current sample
         """
 
         # splitting information from tsv
@@ -206,72 +207,6 @@ class XNLIDataset(IterableDataset):
             label_id = XNLIDataset.LABEL_MAP[label]
 
             return [input_ids, label_id]
-
-    def get_adaptation_batch(self):
-        """ Sample a batch of data to perform model adaptation on"""
-
-        curr_samples_processed = 0 
-        curr_samples = []
-        curr_subword_to_sample = defaultdict(list)
-
-        max_seq_len = int(self.language_task_kwargs["max_seq_len"])
-        sample_size = int(self.language_task_kwargs["sample_size"])
-
-        N = int(self.language_task_kwargs["n"])
-        K = int(self.language_task_kwargs["k"])
-        Q = 0 
-        mask_sampling_method = self.language_task_kwargs["mask_sampling_method"]
-        mask_sampling_prop_rate = float(self.language_task_kwargs["mask_sampling_prop_rate"])
-
-        with open(self.file_path, 'r') as f:
-            for line in f: 
-                for token_ids in self.preprocess_line(line, process_for_adaptation=True):
-                    # preprocess_line returns tuple of (text_a_token_ids, text_b_token_ids)
-
-                    if len(token_ids) > max_seq_len:
-                        continue
-                        
-                    curr_samples.append(token_ids)
-
-                    for idx, token_id in enumerate(token_ids): 
-                        if token_id in tokenizer.all_special_ids:
-                            # don't include special tokens 
-                            continue
-                        
-                        curr_subword_to_sample[token_id].append((curr_samples_processed, idx))
-                
-                    curr_samples_processed += 1 
-
-                    if curr_samples_processed == sample_size:
-
-                        support_set, _ = generate_N_K_samples(curr_subword_to_sample,
-                                                                curr_samples, N, K, Q,
-                                                                mask_sampling_method,
-                                                                mask_sampling_prop_rate,
-                                                                self.language)
-                        processed_batch = meta_collate([("", (support_set, _))])
-                        adaptation_batch = processed_batch[1]
-                        return adaptation_batch
-        
-        # we only get here if there are not enough samples 
-        logger.warning( 
-            f"Dataset for XNLI (language: {self.language}) contains < {sample_size} samples"
-        )
-        support_set, _ = generate_N_K_samples(curr_subword_to_sample, curr_samples, N, K, Q,
-                                              mask_sampling_method, mask_sampling_prop_rate,
-                                              self.language)
-        processed_batch = meta_collate([("", (support_set, _))])
-        adaptation_batch = processed_batch[1]
-        return adaptation_batch
-
-
-    def __iter__(self): 
-        """ IterableDataset expects __iter__ to be overriden"""
-        with open(self.file_path, 'r') as f:
-            for line in f:
-                # tokenize line 
-                processed_line = self.preprocess_line(line)
-                yield processed_line
 
 def main():
     """ Basic testing of XNLI Dataset"""

@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-""" Orchestration of model evaluation """
+""" Deals with the orchestration of model evaluation on a variety of NLU tasks """
 
 import logging
 import os
