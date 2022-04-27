@@ -10,6 +10,7 @@ from torch.utils.data import IterableDataset
 from transformers import XLMRobertaTokenizer
 
 from .metadataset import IterableLanguageTaskDataset
+from .metadataloader import meta_collate
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +56,14 @@ class XNLIDatasetGenerator():
                 "For few shot adaptation must have a translate-train directory"
 
         # if adapt_on_eval is True, then - assuming we are using platipus - we take 
-        # an adaptation step on the final evaluation dataset.  
+        # an adaptation step on the final evaluation dataset. If we are not using platipus, 
+        # we just ignore this flag
         self.adapt_on_eval = config.getboolean("XNLI", "adapt_on_eval", fallback=True)
 
-        self.language_files = self._get_language_files(self.root_path)
-
+        # how to initialize the XNLI (aka. classification) task head
         self.task_head_init_method = config.get("XNLI", "task_head_init_method", fallback="random")
+
+        self.language_files = self._get_language_files(self.root_path)
 
         # when using the platipus meta-learning method, we need to generate a language task for
         # model adaptation - thus we need to store the config specifying language task generation
@@ -246,7 +249,9 @@ class XNLIDataset(IterableDataset):
                                                                 mask_sampling_method,
                                                                 mask_sampling_prop_rate,
                                                                 self.language)
-                        return support_set 
+                        processed_batch = meta_collate([("", (support_set, _))])
+                        adaptation_batch = processed_batch[1]
+                        return adaptation_batch
         
         # we only get here if there are not enough samples 
         logger.warning( 
@@ -255,7 +260,9 @@ class XNLIDataset(IterableDataset):
         support_set, _ = generate_N_K_samples(curr_subword_to_sample, curr_samples, N, K, Q,
                                               mask_sampling_method, mask_sampling_prop_rate,
                                               self.language)
-        return support_set 
+        processed_batch = meta_collate([("", (support_set, _))])
+        adaptation_batch = processed_batch[1]
+        return adaptation_batch
 
 
     def __iter__(self): 
@@ -283,7 +290,7 @@ def main():
 
     config.add_section('LANGUAGE_TASK')
     config.set('LANGUAGE_TASK', 'n', '2')
-    config.set('LANGUAGE_TASK', 'k', '1')
+    config.set('LANGUAGE_TASK', 'k', '2')
     config.set('LANGUAGE_TASK', 'q', '20')
     config.set('LANGUAGE_TASK', 'sample_size', '10_000')
     config.set('LANGUAGE_TASK', 'buffer_size', '100_000_000')
@@ -295,16 +302,9 @@ def main():
 
     for finetune_dataset, evaluation_dataset in dataset_generator:
         
-        adaptation_batch = finetune_dataset.get_adaptation_batch()
-
-        print(adaptation_batch)
-        exit()
-        # for entry in finetune_dataset:
-        #     print(entry)
-        #     exit()
-
-        # finetune_dataloader = NLUDataLoader(finetune_dataset, batch_size=1280) 
-        # evaluation_dataloader = NLUDataLoader(evaluation_dataset, batch_size=3)
+        if finetune_dataset.language == "en":
+            adaptation_batch = finetune_dataset.get_adaptation_batch()
+            print(adaptation_batch)
 
 if __name__ == '__main__':
     main()

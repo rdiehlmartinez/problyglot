@@ -430,7 +430,7 @@ class Platipus(BaseLearner):
                                                              sampling_std=self.log_v_q,
                                                              return_adapted_mean=True,
                                                              params=self.mu_theta,
-                                                             lm_head_weights=adapted_lm_head,
+                                                             lm_head_weights=self.lm_head,
                                                              learning_rate=self.gamma_q,
                                                              clone_params=True,
                                                              device=device)
@@ -476,8 +476,9 @@ class Platipus(BaseLearner):
 
     # for NLU classification tasks
 
-    def run_finetuning_classification(self, finetune_dataloader, n_classes,
-                                      max_finetuning_batch_steps=-1, **kwargs): 
+    def run_finetuning_classification(self, finetune_dataloader, n_classes, adaptation_batch,
+                                      task_head_init_method, max_finetuning_batch_steps=-1,
+                                      **kwargs): 
         """
         Creates a copy of the trained model parameters and continues to finetune these 
         parameters on a given dataset. This method assumes that the task that is being 
@@ -489,6 +490,9 @@ class Platipus(BaseLearner):
             * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model
                 is passed in as a dataloader (in most cases this will be an NLUDataloader)
             * n_classes (int): The number of classes to classify over
+            * adaptation_batch (dict): A dictionary containing the required data for running
+                a forward pass of the model (see run_inner_loop for explanation of the dictionary)
+            * task_head_init_method (str): Method for initializing task head 
             * max_finetuning_batch_steps (int): Optional maximum number of batch steps to take 
                 for model finetuning 
 
@@ -504,26 +508,25 @@ class Platipus(BaseLearner):
 
         self.functional_model.train()
 
-        # task classifier weights are initialized randomly
-        adaptation_batch = move_to_device(next(iter(finetune_dataloader)), self.base_device)
-
-        task_init_data_batch = adaptation_batch if 'protomaml' in self.task_cls_init_method \
-                                    else None
-        init_kwargs = self.get_task_init_kwargs(n_classes=n_classes,
-                                                data_batch=task_init_data_batch)
-       
-        task_head_weights = TaskHead.initialize_task_head(task_type='classification',
-                                                          method=self.task_cls_init_method,
-                                                          init_kwargs=init_kwargs)
-
-        # sampling weights from mu_theta using the first batch of data 
+        ### Sampling weights from mu_theta using the passed in adaptation_batch 
+        # NOTE: the adaptation batch is in the same form as the batches of training used 
+        # during meta training 
+        adaptation_batch = move_to_device(adaptation_batch, self.base_device)
         sampled_theta = self._sample_adapted_weights(adaptation_batch,
                                                      sampling_std=self.log_sigma_theta,
                                                      params=self.mu_theta,
-                                                     task_head_weights=task_head_weights,
+                                                     lm_head_weights=self.lm_head,
                                                      learning_rate=self.gamma_p,
                                                      clone_params=True,
                                                      evaluation_mode=True)
+
+        ### Initializing the task head used for the downstream NLU task
+        task_init_data_batch = move_to_device(next(iter(finetune_dataloader)), self.base_device)
+        init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_classes=n_classes,
+                                                data_batch=task_init_data_batch)
+        task_head_weights = TaskHead.initialize_task_head(task_type='classification',
+                                                          method=task_head_init_method,
+                                                          init_kwargs=init_kwargs)
 
         # detaching parameters from original computation graph to create new leaf variables
         finetuned_theta = []
@@ -585,7 +588,7 @@ class Platipus(BaseLearner):
                 in as a dataloader (in most cases this will be an NLUDataloader)
             * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
             * task_head_weights (dict): Weights of task head (classifier head)
-            * adaptation_batch: (optional) A dictionary containing the required data for running
+            * adaptation_batch (dict): A dictionary containing the required data for running
                 a forward pass of the model (see run_inner_loop for explanation of the dictionary)
 
         Returns: 
@@ -605,7 +608,7 @@ class Platipus(BaseLearner):
                 finetuned_params = self._sample_adapted_weights(adaptation_batch, 
                                                                 sampling_std=self.log_sigma_theta,
                                                                 params=finetuned_params,
-                                                                task_head_weights=task_head_weights,
+                                                                lm_head_weights=self.lm_head,
                                                                 learning_rate=self.gamma_p,
                                                                 clone_params=True,
                                                                 evaluation_mode=True)

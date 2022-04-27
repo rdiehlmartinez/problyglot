@@ -51,6 +51,8 @@ class Evaluator(object):
             self.eval_run_tracker = defaultdict(list)
 
         self.use_wandb = config.getboolean('EXPERIMENT', 'use_wandb', fallback=True)
+        
+        self.learner_method = config.get("LEARNER", "method")
 
     @staticmethod
     def compute_accuracy(predictions, evaluation_dataloader):
@@ -115,28 +117,43 @@ class Evaluator(object):
                 evaluation_dataloader = NLUDataLoader(evaluation_dataset,
                                                       batch_size=self.batch_size)
 
+                ### Running Finetuning
                 # Calling on finetuning method which returns a set of trained parameters that 
                 # can be used for inference (inference_params)
+                finetune_adaptation_batch = None
+                task_head_init_method = dataset_generator.task_head_init_method
                 if not dataset_generator.use_few_shot_adaptation:
                     # we are doing zero-shot adaptation --> initial finetuning is always the same
                     if subtask_idx == 0:
-                        inference_params = finetune_method(finetune_dataloader, **eval_task_params)
+                        if self.learner_method == "platipus":
+                            finetune_adaptation_batch = finetune_dataset.get_adaptation_batch()
+                        inference_params = finetune_method(
+                                                    finetune_dataloader,
+                                                    adaptation_batch=finetune_adaptation_batch,
+                                                    task_head_init_method=task_head_init_method,
+                                                    **eval_task_params)
                 else:
-                    inference_params = finetune_method(finetune_dataloader, **eval_task_params)
+                    if self.learner_method == "platipus":
+                        finetune_adaptation_batch = finetune_dataset.get_adaptation_batch()
+                    inference_params = finetune_method(finetune_dataloader,
+                                                       adaptation_batch=finetune_adaptation_batch,
+                                                       task_head_init_method=task_head_init_method,
+                                                       **eval_task_params)
 
-                adaptation_batch = None
+                ### Running Inference 
+                eval_adaptation_batch = None
                 if dataset_generator.adapt_on_eval:
-                    if type(learner).__name__ != "Platipus":
+                    if self.learner_method != "platipus":
                         logger.warning("(ignoring adapt_on_eval) - learner is not 'platipus'")
                     else:    
                         # adapt on the first batch of the evaluation datalaoder
-                        adaptation_batch = next(iter(evaluation_dataloader))
+                        eval_adaptation_batch = evaluation_dataset.get_adaptation_batch()
 
                 predictions, eval_loss = inference_method(evaluation_dataloader,
-                                                          adaptation_batch=adaptation_batch,
+                                                          adaptation_batch=eval_adaptation_batch,
                                                           **inference_params)
 
-                # For logging of metric
+                ### Logging out metrics
                 if self.use_wandb:
                     wandb.define_metric(f"{eval_task}.{evaluation_lng}.{metric_name}",
                                         step_metric="num_task_batches", summary=metric_summary)

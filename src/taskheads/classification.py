@@ -27,7 +27,7 @@ class ClassificationHead(TaskHead):
             model_output = F.layer_norm(model_output, (model_output.size(-1),))
 
         classifier_weights = {"weight": weights["classifier_weight"],
-                              "bias": weights["clasifier_bias"]}
+                              "bias": weights["classifier_bias"]}
 
         logits = F.linear(model_output, **classifier_weights)
         loss = self.loss_function(input=logits, target=labels)
@@ -64,7 +64,7 @@ def classification_random(base_model_hidden_dim, n_classes, device, **kwargs):
 
     task_head_weights = nn.ParameterDict({
         "classifier_weight": nn.Parameter(classifier_weight),
-        "clasifier_bias": nn.Parameter(classifier_bias)
+        "classifier_bias": nn.Parameter(classifier_bias)
     })
 
 

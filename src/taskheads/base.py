@@ -1,8 +1,11 @@
 __author__ = 'Richard Diehl Martinez'
 
 import abc 
+import logging
 
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 class TaskHead(object, metaclass=abc.ABCMeta):
     """
