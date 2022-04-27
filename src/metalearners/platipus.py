@@ -1,8 +1,7 @@
 __author__ = 'Richard Diehl Martinez'
 """
 Implementation of the platipus model, proposed by Finn et el. https://arxiv.org/pdf/1806.02817.pdf
-
-Code adapted from: https://github.com/cnguyen10/few_shot_meta_learning
+Adapted from: https://github.com/cnguyen10/few_shot_meta_learning
 """
 
 import time
@@ -107,8 +106,7 @@ class Platipus(BaseLearner):
                                 .to(self.base_device))
 
         # getting the key, parameter from initialize task head 
-        init_kwargs = self.get_task_init_kwargs(language_head_init_method, n_classes=lm_head_n)
-        self.lm_head_n = lm_head_n
+        init_kwargs = self.get_task_init_kwargs(language_head_init_method, n_labels=lm_head_n)
         self.lm_head = TaskHead.initialize_task_head(task_type='classification',
                                                      method=language_head_init_method,
                                                      init_kwargs=init_kwargs)
@@ -147,7 +145,7 @@ class Platipus(BaseLearner):
 
     # Overriding nn.Module functionality 
     def state_dict(self):
-        """ Overriding method to remove placeholder parameters from functional model"""
+        """ Overriding method to remove placeholder parameters defined by functional model"""
         original_state_dict = super().state_dict()
         updated_state_dict = OrderedDict()
 
@@ -159,13 +157,12 @@ class Platipus(BaseLearner):
         
         return updated_state_dict
 
-
     def get_task_init_kwargs(self, task_init_method, data_batch=None, **kwargs):
         """ 
         Overrides the parent's method to also include kwargs for protomaml.
 
         Args:
-            * task_init_method (str): Method for intiializing the task head
+            * task_init_method (str): Method for initializing the task head
             * data_batch (dict): Batch of data for a forward pass through the model 
                 (see run_inner_loop for information on the data structure)
 
@@ -178,7 +175,6 @@ class Platipus(BaseLearner):
         if 'protomaml' in task_init_method:
             assert(data_batch is not None),\
                 "Use of protomaml as a classification head initializer requires a data_batch"
-
             init_kwargs['functional_model'] = self.functional_model
             init_kwargs['params'] = self.mu_theta
             init_kwargs['data_batch'] = data_batch
@@ -249,9 +245,9 @@ class Platipus(BaseLearner):
         Adapted from: 
         https://github.com/cnguyen10/few_shot_meta_learning
 
-        For a given batch of inputs and labels, we compute the loss of the functional model where
-        the parameters of the model are overriden to be params. Note that this is the main reason
-        that in __init__ we convert the base model to a functional version of the model that can
+        For a given batch of inputs and labels, we compute what the loss of the functional model 
+        would be if the weights of the model are set to params.  Note that this is the main reason
+        that we have to convert the base model to a functional version of the model that can
         take in its parameters as an argument (as opposed to these  parameters being stored in the
         model's state). 
 
@@ -264,7 +260,8 @@ class Platipus(BaseLearner):
                 (the params that we want to evaluate our model at)
             * lm_head_weights (dict): Weights of the lm classification head
             * learning_rate (float): The internal learning rate used to update params
-            * optimize_classifier (bool): Whether to train the final classification layer. 
+            * optimize_classifier (bool): Whether to train the final classification layer as 
+                part of the adaptation process 
             * clone_params (bool): Whether to clone the params passed in (defaults to True)
             * evaluation_mode (bool): Whether running this method during evaluation
                 (either in finetuning or inference) (defaults to False)
@@ -462,7 +459,7 @@ class Platipus(BaseLearner):
                                                              params=self.mu_theta,
                                                              lm_head_weights=self.lm_head,
                                                              learning_rate=self.gamma_p,
-                                                             clone_params=True,)
+                                                             clone_params=True)
 
         kl_loss = kl_divergence_gaussians(p=[*mu_theta_query, *self.log_v_q],
                                           q=[*mu_theta_support, *self.log_sigma_theta])
@@ -474,24 +471,23 @@ class Platipus(BaseLearner):
 
     ###### Model evaluation methods ######
 
-    # for NLU classification tasks
-
-    def run_finetuning_classification(self, finetune_dataloader, n_classes, adaptation_batch,
-                                      task_head_init_method, max_finetuning_batch_steps=-1,
-                                      **kwargs): 
+    def run_finetuning(self, task_type, finetune_dataloader, adaptation_batch, n_labels, 
+                       task_head_init_method, max_finetuning_batch_steps=-1, **kwargs): 
         """
         Creates a copy of the trained model parameters and continues to finetune these 
-        parameters on a given dataset. This method assumes that the task that is being 
-        finetuned is a classification task (e.g. NLI). Effectively, implements a 
-        slightly adapted version of algorithm 2 of the platipus paper
-        https://arxiv.org/pdf/1806.02817.pdf for meta-testing.
+        parameters on a given dataset. Implements a  slightly adapted version of algorithm 2
+        of the platipus paper https://arxiv.org/pdf/1806.02817.pdf. Note that when finetuning 
+        and using the platipus method, we first need to sample weights for the model. We do so
+        by adapting platipus to a batch of data from the finetune task that has been formatted
+        to match the training LM task.
         
         Args: 
-            * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model
-                is passed in as a dataloader (in most cases this will be an NLUDataloader)
-            * n_classes (int): The number of classes to classify over
-            * adaptation_batch (dict): A dictionary containing the required data for running
-                a forward pass of the model (see run_inner_loop for explanation of the dictionary)
+            * task_type (str): Type of task (e.g. 'classification')
+            * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model on
+                is passed in as a dataloader (i.e. NLUDataloader)
+            * adaptation_batch (dict): A batch of language data for initially adapting platipus 
+                and sampling the weights of the model 
+            * n_labels (int): The number of labels in the given finetuning task
             * task_head_init_method (str): Method for initializing task head 
             * max_finetuning_batch_steps (int): Optional maximum number of batch steps to take 
                 for model finetuning 
@@ -503,7 +499,8 @@ class Platipus(BaseLearner):
         """
 
         if not hasattr(self, "functional_model"):
-            # If the model is only being evaluated it might not have a functionalized version 
+            # NOTE: Edge case for if the model is only being evaluated without having 
+            # been trained
             self.functionalize_model()
 
         self.functional_model.train()
@@ -522,9 +519,9 @@ class Platipus(BaseLearner):
 
         ### Initializing the task head used for the downstream NLU task
         task_init_data_batch = move_to_device(next(iter(finetune_dataloader)), self.base_device)
-        init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_classes=n_classes,
+        init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_labels=n_labels,
                                                 data_batch=task_init_data_batch)
-        task_head_weights = TaskHead.initialize_task_head(task_type='classification',
+        task_head_weights = TaskHead.initialize_task_head(task_type=task_type,
                                                           method=task_head_init_method,
                                                           init_kwargs=init_kwargs)
 
@@ -556,7 +553,7 @@ class Platipus(BaseLearner):
                                                     params=finetuned_theta)
 
             _, loss = self._compute_task_loss(outputs, data_batch, finetuned_task_head_weights, 
-                                              task_type='classification')
+                                              task_type=task_type)
 
             loss.backward()
             finetune_optimizer.step()
@@ -572,18 +569,18 @@ class Platipus(BaseLearner):
         return inference_params
 
 
-    def run_inference_classification(self, inference_dataloader, finetuned_params, 
-                                     task_head_weights, adaptation_batch=None, **kwargs):
+    def run_inference(self, task_type, inference_dataloader, finetuned_params, task_head_weights,
+                      adaptation_batch=None, **kwargs):
         """ 
-        This method is to be called after the run_finetuning_classification. 
+        This method is to be called after run_finetuning. 
         
-        As the name suggests, this method runs inference on an NLU dataset for some classification
-        task (like NLI). The primary adaptation of the weights for a given task should 
-        occur in the run_finetuning_classification method. It is possible, however, to 
-        adapt the weights one more time on a given dataset, by passing in a batch of data 
-        (adaptation_batch). 
+        As the name suggests, this method runs inference on an NLU dataset for some task.
+        The primary adaptation of the weights for a given task should  occur in the
+        run_finetuning method. It is possible, however, to  adapt the weights one more time
+        on a given dataset, by passing in a batch of data (adaptation_batch). 
 
         Args: 
+            * task_type (str): Type of task (e.g. 'classification')
             * inference_dataloader (torch.data.Dataloader): The dataset for inference is passed
                 in as a dataloader (in most cases this will be an NLUDataloader)
             * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
@@ -629,7 +626,7 @@ class Platipus(BaseLearner):
                                                         params=finetuned_params)
 
                 logits, loss = self._compute_task_loss(outputs, data_batch, task_head_weights,
-                                                       task_type='classification')
+                                                       task_type=task_type)
 
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
 

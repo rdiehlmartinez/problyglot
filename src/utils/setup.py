@@ -1,5 +1,5 @@
 __author__ = 'Richard Diehl Martinez'
-''' Utilities for setting up logging and reading configuration files'''
+""" Utilities for setting up logging and reading configuration files"""
 
 import os
 import logging 

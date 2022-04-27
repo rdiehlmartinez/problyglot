@@ -36,13 +36,13 @@ class ClassificationHead(TaskHead):
 
 
 @TaskHead.register_initialization_method
-def classification_random(base_model_hidden_dim, n_classes, device, **kwargs):
+def classification_random(base_model_hidden_dim, n_labels, device, **kwargs):
     """
     Initializes classification task head using a random Xavier-He initialization method.
 
     Args: 
         * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
-        * n_classes (int): Number of classes to classify over 
+        * n_labels (int): Number of labels (i.e. classes) to classify over 
         * device (str): Device type ('cuda' or 'cpu')
     Returns: 
         * task_head_weights (nn.ParameterDict): {
@@ -51,13 +51,13 @@ def classification_random(base_model_hidden_dim, n_classes, device, **kwargs):
             }
     """
     # Xavier normal weight implementation
-    std_weight = math.sqrt(2.0 / float(base_model_hidden_dim + n_classes))
-    std_bias = math.sqrt(2.0 / float(n_classes))
+    std_weight = math.sqrt(2.0 / float(base_model_hidden_dim + n_labels))
+    std_bias = math.sqrt(2.0 / float(n_labels))
 
     # weights need to be shape (out_features, in_features) to be compatible with linear layer
-    classifier_weight = torch.randn((n_classes, base_model_hidden_dim), device=device) \
+    classifier_weight = torch.randn((n_labels, base_model_hidden_dim), device=device) \
                             * std_weight
-    classifier_bias = torch.randn((n_classes), device=device) * std_bias
+    classifier_bias = torch.randn((n_labels), device=device) * std_bias
 
     classifier_weight.requires_grad = True
     classifier_bias.requires_grad = True
@@ -71,7 +71,7 @@ def classification_random(base_model_hidden_dim, n_classes, device, **kwargs):
     return task_head_weights
 
 @TaskHead.register_initialization_method
-def classification_random_fc(base_model_hidden_dim, n_classes, **kwargs):
+def classification_random_fc(base_model_hidden_dim, n_labels, **kwargs):
     """
     Initializes classification task head using a random Xavier-He initialization method. 
     Unlike the classification_random initialization method, this method also includes a 
@@ -79,7 +79,7 @@ def classification_random_fc(base_model_hidden_dim, n_classes, **kwargs):
 
     Args: 
         * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
-        * n_classes (int): Number of classes to classify over 
+        * n_labels (int): Number of labels (classes) to classify over 
     Returns: 
         * task_head_weights (nn.ParameterDict): {
             * fc_weight -> (nn.Parameter): weight matrix of fully connected layer
@@ -91,7 +91,7 @@ def classification_random_fc(base_model_hidden_dim, n_classes, **kwargs):
     # Little bit of a hack - can initialize weights of FC layer by
     # repurposing classification_random
     fc_head_weights = classification_random(base_model_hidden_dim, base_model_hidden_dim, **kwargs)
-    classifier_weights = classification_random(base_model_hidden_dim, n_classes, **kwargs)
+    classifier_weights = classification_random(base_model_hidden_dim, n_labels, **kwargs)
 
     task_head_weights = nn.ParameterDict({
         "fc_weight": fc_head_weights["classifier_weight"],
@@ -104,14 +104,14 @@ def classification_random_fc(base_model_hidden_dim, n_classes, **kwargs):
 
 
 @TaskHead.register_initialization_method
-def classification_protomaml(base_model_hidden_dim, n_classes, functional_model, params,
+def classification_protomaml(base_model_hidden_dim, n_labels, functional_model, params,
                              data_batch, device, **kwargs):
     """
     Initializes task head using the protomaml (prototypical network + MAML) method. 
 
     Args: 
         * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
-        * n_classes (int): Number of classes to classify over 
+        * n_labels (int): Number of labels (classes) to classify over 
         * functional_model (higher.MonkeyPatched): The 'functionalized' version of the 
             base model
         * params ([torch.Tensor]): List of tensor weights storing the model weights.
@@ -133,9 +133,9 @@ def classification_protomaml(base_model_hidden_dim, n_classes, functional_model,
     batch_size = outputs.size(0)
     last_hidden_state = outputs[torch.arange(batch_size), data_batch['input_target_idx']]
 
-    prototypes = torch.zeros((n_classes, base_model_hidden_dim), device=device)
+    prototypes = torch.zeros((n_labels, base_model_hidden_dim), device=device)
 
-    for c in range(n_classes):
+    for c in range(n_labels):
         idx = torch.nonzero(data_batch['label_ids'] == c).squeeze()
         if idx.nelement() != 0:
             prototypes[c] = torch.mean(last_hidden_state[idx], dim=0)
@@ -154,14 +154,14 @@ def classification_protomaml(base_model_hidden_dim, n_classes, functional_model,
 
 
 @TaskHead.register_initialization_method
-def classification_protomaml_fc(base_model_hidden_dim, n_classes, **kwargs):
+def classification_protomaml_fc(base_model_hidden_dim, n_labels, **kwargs):
     """
     Same as protomaml, expect also adds a fully connected layer (FC) of dimension 
     base_model_hidden_dim. This FC connected layer is initialized randomly. 
 
     Args: 
         * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
-        * n_classes (int): Number of classes to classify over 
+        * n_labels (int): Number of labels (classes) to classify over 
 
         * kwargs must contain the following args: 
             * functional_model (higher.MonkeyPatched): The 'functionalized' version of the 
@@ -183,7 +183,7 @@ def classification_protomaml_fc(base_model_hidden_dim, n_classes, **kwargs):
     # repurposing classification_random
     fc_head_weights = classification_random(base_model_hidden_dim, base_model_hidden_dim, **kwargs)
 
-    protomaml_weights = classification_protomaml(base_model_hidden_dim, n_classes, **kwargs)
+    protomaml_weights = classification_protomaml(base_model_hidden_dim, n_labels, **kwargs)
 
     task_head_weights = nn.ParameterDict({
         "fc_weight": fc_head_weights["classifier_weight"],

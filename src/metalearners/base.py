@@ -33,7 +33,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
     ###### Task head initialization methods ######
 
-    def get_task_init_kwargs(self, n_classes, **kwargs):
+    def get_task_init_kwargs(self, n_labels, **kwargs):
         """ 
         Helper method for generating keyword arguments that can be passed into a task head 
         initialization method
@@ -48,7 +48,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         init_kwargs = {}
 
         init_kwargs['base_model_hidden_dim'] = self.base_model_hidden_dim
-        init_kwargs['n_classes'] = n_classes
+        init_kwargs['n_labels'] = n_labels
         init_kwargs['device'] = self.base_device 
 
         return init_kwargs
@@ -178,11 +178,12 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
     ###### Model evaluation methods ######
 
     @abc.abstractmethod
-    def run_finetuning_classification(self, finetune_dataloader, *args, **kwargs):
+    def run_finetuning(self, task_type, finetune_dataloader, *args, **kwargs):
         """
         Finetunes the model on the data of finetune_dataloader.
 
         Args:
+            * task_type (str): Type of task to finetune on (e.g. classification)
             * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model is
                 passed in as a dataloader (in most cases this will be an NLUDataloader)
 
@@ -193,11 +194,14 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def run_inference_classification(self, inference_dataloader, *args, **kwargs):
+    def run_inference(self, task_type, inference_dataloader, *args, **kwargs):
         """
-        Evaluates the model on the data of inference_dataloader.
+        Evaluates the model on the data of inference_dataloader. This should only be called once 
+        run_finetuning has been run.
 
         Args: 
+            * task_type (str): Type of task to evaluate on; should be the same as the task type 
+                passed into run_finetuning
             * inference_dataloader (torch.data.Dataloader): The dataset for inference is passed
                 in as a dataloader (in most cases this will be an NLUDataloader)
 

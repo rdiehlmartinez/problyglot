@@ -225,8 +225,8 @@ class XNLIDataset(IterableDataset):
 
         with open(self.file_path, 'r') as f:
             for line in f: 
-                for token_ids in self.preprocess_line(line, True):
-                    # returns tuple of (text_a_token_ids, text_b_token_ids)
+                for token_ids in self.preprocess_line(line, process_for_adaptation=True):
+                    # preprocess_line returns tuple of (text_a_token_ids, text_b_token_ids)
 
                     if len(token_ids) > max_seq_len:
                         continue
