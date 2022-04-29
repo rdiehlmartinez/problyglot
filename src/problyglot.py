@@ -65,8 +65,8 @@ class Problyglot(object):
         """
 
         logger.info(f"Loading base model: {base_model_name}")
-        model = None
         model_kwargs = dict(self.config.items("BASE_MODEL"))
+
         if base_model_name == 'xlm_r':
             model_cls = XLMR
         else:
@@ -84,11 +84,15 @@ class Problyglot(object):
         """ Helper function for reading in (meta) learning procedure """
 
         logger.info(f"Using learner: {learner_method}")
-        learner = None
+
         learner_kwargs = dict(self.config.items("LEARNER"))
+        if 'LANGUAGE_TASK' in self.config: 
+            learner_kwargs['lm_head_n'] = self.config.getint("LANGUAGE_TASK", "n")
+        else:
+            assert(learner_method != "platipus"),\
+                "Platipus requires LANGUAGE_TASK config section to be specified"
 
         if learner_method == 'platipus':
-            learner_kwargs['lm_head_n'] = self.config.getint("LANGUAGE_TASK", "n", fallback=5)
             learner_cls = Platipus
         elif learner_method == 'baseline': 
             learner_cls = BaselineLearner

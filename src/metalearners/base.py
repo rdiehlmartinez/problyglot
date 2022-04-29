@@ -13,7 +13,7 @@ from ..taskheads import TaskHead, ClassificationHead
 
 class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
-    def __init__(self, base_model, base_device, language_head_init_method='random', lm_head_n=5,
+    def __init__(self, base_model, base_device, lm_head_init_method='random', lm_head_n=5,
                  **kwargs):
         """
         BaseLearner establishes the inferface for the learner class and 
@@ -38,11 +38,11 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         self.base_device = base_device
 
         # getting the key, parameter from initialize task head 
-        assert ("protomaml" not in language_head_init_method),\
+        assert ("protomaml" not in lm_head_init_method),\
             "The language modeling task head cannot be initialized using a protomaml approach"
-        init_kwargs = self.get_task_init_kwargs(language_head_init_method, lm_head_n)
+        init_kwargs = self.get_task_init_kwargs(lm_head_init_method, lm_head_n)
         self.lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                     method=language_head_init_method,
+                                                     method=lm_head_init_method,
                                                      init_kwargs=init_kwargs)
 
     ###### Task head initialization methods ######
