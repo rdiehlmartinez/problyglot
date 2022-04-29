@@ -30,9 +30,10 @@ class BaselineLearner(BaseLearner):
         super().__init__(base_model, *args, **kwargs)
 
         # setting up optimizer
-        params = [p for p in self.base_model.parameters() if p.requires_grad]
+        base_params = [p for p in self.base_model.parameters() if p.requires_grad]
+        all_params = itertools.chain(base_params, self.lm_head.values())
         if optimizer_type == 'adam': 
-            self.optimizer = torch.optim.Adam(params=params, lr=float(lr))
+            self.optimizer = torch.optim.Adam(params=all_params, lr=float(lr))
         else: 
             logger.exception(f"Invalid optimizer type: {optimizer_type}")
             raise Exception(f"Invalid optimizer type: {optimizer_type}")

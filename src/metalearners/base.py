@@ -37,7 +37,10 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
         self.base_device = base_device
 
-        # getting the key, parameter from initialize task head 
+        # Initializing the task head used for language modeling 
+        # NOTE: the platipus model uses the language modeling task head for weight adaptation
+        # even during evaluation on some downstream NLU task
+
         assert ("protomaml" not in lm_head_init_method),\
             "The language modeling task head cannot be initialized using a protomaml approach"
         init_kwargs = self.get_task_init_kwargs(lm_head_init_method, lm_head_n)
