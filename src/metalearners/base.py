@@ -9,11 +9,12 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from ..taskheads import ClassificationHead
+from ..taskheads import TaskHead, ClassificationHead
 
 class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
-    def __init__(self, base_model, base_device, **kwargs):
+    def __init__(self, base_model, base_device, language_head_init_method='random', lm_head_n=5,
+                 **kwargs):
         """
         BaseLearner establishes the inferface for the learner class and 
         inherents from torch.nn.Module. 
@@ -21,6 +22,11 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         Args: 
             * base_model (implements a BaseModel)
             * base_device (str): what device to use for training (either 'cpu' or 'gpu) 
+            * language_head_init_method (str): How to initialize the language head classifier layer
+            * lm_head_n (int): Size of n-way classification used for generating the language 
+                modeling tasks used for training and conditioning the platipus model on a 
+                given language  
+
         """
         super().__init__()
 
@@ -31,25 +37,42 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
         self.base_device = base_device
 
+        # getting the key, parameter from initialize task head 
+        assert ("protomaml" not in language_head_init_method),\
+            "The language modeling task head cannot be initialized using a protomaml approach"
+        init_kwargs = self.get_task_init_kwargs(language_head_init_method, lm_head_n)
+        self.lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                     method=language_head_init_method,
+                                                     init_kwargs=init_kwargs)
+
     ###### Task head initialization methods ######
 
-    def get_task_init_kwargs(self, n_labels, **kwargs):
+    def get_task_init_kwargs(self, task_init_method, n_labels, data_batch=None, **kwargs):
         """ 
         Helper method for generating keyword arguments that can be passed into a task head 
         initialization method
         
+        Args: 
+            * task_init_method (str): Method for initializing the task head
+            * n_labels (int): Number of labels defined by the task (i.e. classes)
+            * data_batch (dict): Batch of data used to initialize the task head if using 
+                the protomaml task_init_method
+
         Returns:
             * init_kwargs (dict): Keyword arguments used by the task head initialization function 
         """
-
-        # The two attributes below need to be specified by the learner
-        assert(hasattr(self, 'base_model_hidden_dim') and hasattr(self, 'base_device'))
 
         init_kwargs = {}
 
         init_kwargs['base_model_hidden_dim'] = self.base_model_hidden_dim
         init_kwargs['n_labels'] = n_labels
         init_kwargs['device'] = self.base_device 
+
+        if 'protomaml' in task_init_method:
+            assert(data_batch is not None),\
+                "Use of protomaml as a classification head initializer requires a data_batch"
+            init_kwargs['model'] = self.base_model
+            init_kwargs['data_batch'] = data_batch
 
         return init_kwargs
 
@@ -135,7 +158,8 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         return (device, ddp)
 
     @abc.abstractmethod
-    def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, num_tasks_per_iteration):
+    def run_inner_loop_mp(self, rank, world_size, data_queue, loss_queue, step_optimizer,
+                          num_tasks_per_iteration):
         """
         Entry point for running inner loop using multiple processes. Sets up DDP init process
         group, wraps learner in DDP and calls forward/backward on the DDP-wrapped model.

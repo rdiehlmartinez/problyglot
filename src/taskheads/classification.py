@@ -104,20 +104,20 @@ def classification_random_fc(base_model_hidden_dim, n_labels, **kwargs):
 
 
 @TaskHead.register_initialization_method
-def classification_protomaml(base_model_hidden_dim, n_labels, functional_model, params,
-                             data_batch, device, **kwargs):
+def classification_protomaml(base_model_hidden_dim, n_labels, model, data_batch, device,
+                             params=None, **kwargs):
     """
     Initializes task head using the protomaml (prototypical network + MAML) method. 
 
     Args: 
         * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
         * n_labels (int): Number of labels (classes) to classify over 
-        * functional_model (higher.MonkeyPatched): The 'functionalized' version of the 
-            base model
-        * params ([torch.Tensor]): List of tensor weights storing the model weights.
+        * model (higher.MonkeyPatched or nn.Module): Either the model or the 'functionalized'
+            version of the base model
         * data_batch (dict): Batch of data for a forward pass through the model 
             (see run_inner_loop for information on the data structure).
         * device (str): Device type ('cuda' or 'cpu')
+        * params ([torch.Tensor]): Only needs to be passed in if the model is a functional model;
     Returns: 
         * task_head_weights (nn.ParameterDict): {
             * classifier_weight -> (nn.Parameter): classification weight matrix
@@ -125,9 +125,13 @@ def classification_protomaml(base_model_hidden_dim, n_labels, functional_model, 
             }
     """
 
-    outputs = functional_model.forward(input_ids=data_batch['input_ids'],
-                                        attention_mask=data_batch['attention_mask'],
-                                        params=[p for p in params])
+    if params is not None: 
+        outputs = model.forward(input_ids=data_batch['input_ids'],
+                                attention_mask=data_batch['attention_mask'],
+                                params=[p for p in params])
+    else:
+        outputs = model(input_ids=data_batch['input_ids'], 
+                        attention_mask=data_batch['attention_mask'])
 
     # outputs has form (batch_size, sequence_length, hidden_size);
     batch_size = outputs.size(0)
@@ -163,13 +167,8 @@ def classification_protomaml_fc(base_model_hidden_dim, n_labels, **kwargs):
         * base_model_hidden_dim (int): The hidden dimensions of the outputs of the base_model 
         * n_labels (int): Number of labels (classes) to classify over 
 
-        * kwargs must contain the following args: 
-            * functional_model (higher.MonkeyPatched): The 'functionalized' version of the 
-                base model
-            * params ([torch.Tensor]): List of tensor weights storing the model weights.
-            * data_batch (dict): Batch of data for a forward pass through the model 
-                (see run_inner_loop for information on the data structure).
-            * device (str): Device type ('cuda' or 'cpu')
+        * kwargs must contain the required arguments for calling classification_random and 
+            classification_protomaml
     Returns: 
         * task_head_weights (nn.ParameterDict): {
             * fc_weight -> (nn.Parameter): weight matrix of fully connected layer

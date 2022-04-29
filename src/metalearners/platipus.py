@@ -6,7 +6,6 @@ Adapted from: https://github.com/cnguyen10/few_shot_meta_learning
 
 import time
 import higher 
-import logging
 import itertools
 
 from collections import OrderedDict
@@ -20,8 +19,6 @@ from ..taskheads import TaskHead
 from ..utils.modeling import kl_divergence_gaussians
 from ..utils import move_to_device
 
-logger = logging.getLogger(__name__)
-
 class Platipus(BaseLearner):
     def __init__(self, base_model,  optimizer_type='adam',
                                     meta_lr=1e-2,
@@ -33,8 +30,6 @@ class Platipus(BaseLearner):
                                     num_inner_steps=5,
                                     use_first_order=False,
                                     language_embedding_method='val_grad',
-                                    language_head_init_method='random',
-                                    lm_head_n=5,
                                     *args,
                                     **kwargs):
         """
@@ -69,11 +64,6 @@ class Platipus(BaseLearner):
                 condition the language-dependent probability distribution from which we sample
                 weights for a given language (defaults to 'val_grad'). 'Val_grad' is the implicit 
                 method used in the platipus paper. 
-            * language_head_init_method (str): How to initialize the language head classifier layer
-            * lm_head_n (int): Size of n-way classification used for generating the language 
-                modeling tasks used for training and conditioning the platipus model on a 
-                given language  
-
         """
 
         super().__init__(base_model, *args, **kwargs)
@@ -104,12 +94,6 @@ class Platipus(BaseLearner):
         self.inner_lr = torch.nn.Parameter(data=torch.tensor(float(inner_lr)).to(self.base_device))
         self.classifier_lr = torch.nn.Parameter(data=torch.tensor(float(classifier_lr))\
                                 .to(self.base_device))
-
-        # getting the key, parameter from initialize task head 
-        init_kwargs = self.get_task_init_kwargs(language_head_init_method, n_labels=lm_head_n)
-        self.lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                     method=language_head_init_method,
-                                                     init_kwargs=init_kwargs)
 
         # loading in meta optimizer 
         self.meta_lr = float(meta_lr)
@@ -160,27 +144,22 @@ class Platipus(BaseLearner):
         
         return updated_state_dict
 
-    def get_task_init_kwargs(self, task_init_method, data_batch=None, **kwargs):
+    def get_task_init_kwargs(self, task_init_method, n_labels, **kwargs):
         """ 
-        Override to also include kwargs for protomaml.
+        Override base implementation of this method to replace the model with the functional 
+        model and also pass in the model params when the task head is initialized using  protomaml.
 
         Args:
             * task_init_method (str): Method for initializing the task head
-            * data_batch (dict): Batch of data for a forward pass through the model 
-                (see run_inner_loop for information on the data structure)
-
+            * n_labels (int): Number of labels defined by the task (i.e. classes)
         Returns:
             * init_kwargs (dict): Keyword arguments used by the initialization function 
         """
 
-        init_kwargs = super().get_task_init_kwargs(**kwargs)
-        
+        init_kwargs = super().get_task_init_kwargs(task_init_method, n_labels, **kwargs)
         if 'protomaml' in task_init_method:
-            assert(data_batch is not None),\
-                "Use of protomaml as a classification head initializer requires a data_batch"
-            init_kwargs['functional_model'] = self.functional_model
+            init_kwargs['model'] = self.functional_model
             init_kwargs['params'] = self.mu_theta
-            init_kwargs['data_batch'] = data_batch
 
         return init_kwargs
     

@@ -16,13 +16,10 @@ from ..utils import move_to_device
 
 class BaselineLearner(BaseLearner):
 
-    def __init__(self, base_model, optimizer_type='adam',
-                                   lr=1e-2,
-                                   *args,
-                                   **kwargs): 
+    def __init__(self, base_model, optimizer_type='adam', lr=1e-2, *args, **kwargs): 
         """
         BaselineLearner implements a fully-supervised learning process to train
-        the base_model (serves as a baseline).
+        a given base_model (serves as a baseline). 
 
         Args: 
             * base_model (implementation of BaseModel)
@@ -32,15 +29,14 @@ class BaselineLearner(BaseLearner):
         
         super().__init__(base_model, *args, **kwargs)
 
-        self.base_model.to(self.base_device)
-
         # setting up optimizer
-        params = [p for p in base_model.parameters() if p.requires_grad]
+        params = [p for p in self.base_model.parameters() if p.requires_grad]
         if optimizer_type == 'adam': 
             self.optimizer = torch.optim.Adam(params=params, lr=float(lr))
         else: 
             logger.exception(f"Invalid optimizer type: {optimizer_type}")
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
+
 
     ###### Model training methods ######
 
@@ -97,9 +93,9 @@ class BaselineLearner(BaseLearner):
     ### Main Inner Training Loop 
     def run_inner_loop(self, support_batch, query_batch=None, device=None, *args, **kwargs): 
         """ 
-        Run an inner loop optimization step. Usually this is in the context of 
-        meta-learning, but in the case of a baseline model an inner_loop simply amounts 
-        to a running a forward pass through the model and returning the corresponding loss.
+        Run an inner loop optimization step. Usually this is in the context of meta-learning, but
+        in the case of a baseline model an inner_loop simply amounts to running a forward pass
+        through the model and returning the corresponding loss.
 
         Args:
             * support_batch: a dictionary containing the following information for the support set
@@ -177,32 +173,29 @@ class BaselineLearner(BaseLearner):
         else: 
             input_batch = support_batch
 
-        n_classes = torch.unique(support_batch['label_ids']).numel()
-        init_kwargs = self.get_task_init_kwargs(n_classes=n_classes, device=device)
-        task_head_weights = TaskHead.initialize_task_head(task_type='classification',
-                                                          method='random',
-                                                          init_kwargs=init_kwargs)
-
-
         outputs = self.base_model(input_ids=input_batch['input_ids'],
                                   attention_mask=input_batch['attention_mask'])
 
-        _, loss = self._compute_task_loss(outputs, input_batch, task_head_weights,
+        _, loss = self._compute_task_loss(outputs, input_batch, self.lm_head,
                                           task_type='classification')
 
         return loss
 
     ###### Model evaluation methods ######
 
-    def run_finetuning_classification(self, finetune_dataloader, n_classes,
-                                      max_finetuning_batch_steps=-1, **kwargs):
+    def run_finetuning(self, task_type, finetune_dataloader, n_labels, task_head_init_method,
+                       max_finetuning_batch_steps=-1, **kwargs):
         """
-        Finetunes the model on the data of finetune_dataloader.
+        Finetunes the model on the data of finetune_dataloader. Creates a copy of the model and 
+        continues to finetune the copy on a given NLU task (task_type) with the corresponding data
+        stored in finetune_dataloader.
 
         Args: 
-            * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model
-                is passed in as a dataloader (in most cases this will be an NLUDataloader)
-            * n_classes (int): The number of classes to classify over
+            * task_type (str): Type of task (e.g. 'classification')
+            * finetune_dataloader (torch.data.Dataloader): The dataset for finetuning the model on
+                is passed in as a dataloader (i.e. NLUDataloader)
+            * n_labels (int): The number of labels in the given finetuning task
+            * task_head_init_method (str): Method for initializing task head 
             * max_finetuning_batch_steps (int): Optional maximum number of batch steps to take 
                 for model finetuning 
 
@@ -213,10 +206,12 @@ class BaselineLearner(BaseLearner):
         """ 
         self.base_model.train()
 
-        init_kwargs = self.get_task_init_kwargs(n_classes=n_classes)
-       
-        task_head_weights = TaskHead.initialize_task_head(task_type='classification',
-                                                          method='random',
+        ### Initializing the task head used for the downstream NLU task
+        task_init_data_batch = move_to_device(next(iter(finetune_dataloader)), self.base_device)
+        init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_labels=n_labels,
+                                                data_batch=task_init_data_batch)
+        task_head_weights = TaskHead.initialize_task_head(task_type=task_type,
+                                                          method=task_head_init_method,
                                                           init_kwargs=init_kwargs)
 
         finetuned_model = copy.deepcopy(self.base_model)
@@ -241,7 +236,7 @@ class BaselineLearner(BaseLearner):
                                       attention_mask=data_batch['attention_mask'],)
 
             _, loss = self._compute_task_loss(outputs, data_batch, finetuned_task_head_weights,
-                                              task_type='classification')
+                                              task_type=task_type)
 
             loss.backward()
             finetune_optimizer.step()
@@ -256,13 +251,14 @@ class BaselineLearner(BaseLearner):
 
         return inference_params
 
-    def run_inference_classification(self, inference_dataloader, finetuned_model,
-                                     task_head_weights, **kwargs):
+    def run_inference(self, task_type, inference_dataloader, finetuned_model, task_head_weights,
+                      **kwargs):
         """
-        This method is to be called after the run_finetuning_classification. Runs inference 
-        on the data stored in inference_dataloader, using the finetuned_model.
+        This method is to be called after the run_finetuning. Runs inference on the data stored
+        in inference_dataloader, using the finetuned_model.
 
         Args: 
+            * task_type (str): Type of task (e.g. 'classification')
             * inference_dataloader (torch.data.Dataloader): The dataset for inference is passed
                 in as a dataloader (in most cases this will be an NLUDataloader)
             * finetuned_model ([torch.nn.Module]): Finetuned model
@@ -290,7 +286,7 @@ class BaselineLearner(BaseLearner):
                                           attention_mask=data_batch['attention_mask'],)
 
                 logits, loss = self._compute_task_loss(outputs, data_batch, task_head_weights,
-                                                       task_type='classification')
+                                                       task_type=task_type)
             
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
 
@@ -299,7 +295,5 @@ class BaselineLearner(BaseLearner):
                 total_samples += batch_size 
 
             total_loss /= total_samples
-
-            # reference to finetuned_model deleted - no need to set in train mode
 
         return (predictions, total_loss)
