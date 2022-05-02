@@ -62,10 +62,8 @@ class NLUDataset(IterableDataset, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def preprocess_line(self, line, process_for_adaptation=False):
         """
-        For a given text input line, splits the line into the hypothesis and the premise; and 
-        tokenizes the two lines. If process_for_adaptation is set, returns a tuple of the two 
-        tokenized lines. Otherwise, returns the two lines tokenized into one combined list of  
-        tokens along with the corresponding label id.
+        For a given text input line, splits, tokenizes and otherwise processes the line.
+        If process_for_adaptation is set, returns an iterablable of tokenized lines.
 
         Args: 
             * line (str): Line of text 
@@ -74,9 +72,9 @@ class NLUDataset(IterableDataset, metaclass=abc.ABCMeta):
             
         Returns: 
             If process_for_adaptation: 
-                * Tuple of lists corresponding to tokenized hypothesis and premise 
+                * Iterable of processed and tokenized texts
             Else:
-                * input_ids (list): List of tokens of combined hypothesis and premise
+                * input_ids (list): List of input tokens
                 * label_id (int): Label for the current sample
         """
         raise NotImplementedError()
@@ -121,7 +119,7 @@ class NLUDataset(IterableDataset, metaclass=abc.ABCMeta):
         with open(self.file_path, 'r') as f:
             for line in f: 
                 for token_ids in self.preprocess_line(line, process_for_adaptation=True):
-                    # preprocess_line returns tuple of (text_a_token_ids, text_b_token_ids)
+                    # preprocess_line returns an iterable of tokenized text tokens
 
                     if len(token_ids) > max_seq_len:
                         continue

@@ -210,7 +210,10 @@ class Problyglot(object):
 
         if self.config.getboolean("PROBLYGLOT", "run_initial_eval", fallback=True):
             logger.info("Initial evaluation before model training")
-            self.evaluator.run(self.learner, num_task_batches=0)
+            if not hasattr(self, "evaluator"):
+                logger.warning("Evaluation missing in config - skipping evaluator run")
+            else: 
+                self.evaluator.run(self.learner, num_task_batches=0)
 
 
         ### Model training loop
@@ -231,7 +234,7 @@ class Problyglot(object):
                 else: 
                     task_loss = self.learner.run_inner_loop(support_batch, query_batch)
             
-                task_loss = task_loss / num_tasks_per_iteration # normalizing loss 
+                task_loss = task_loss/num_tasks_per_iteration # normalizing loss 
                 if self.learner_method == "platipus":
                     ce_loss = ce_loss/num_tasks_per_iteration
                     kl_loss = kl_loss/num_tasks_per_iteration
@@ -277,7 +280,7 @@ class Problyglot(object):
                         time.sleep(1)
                 else: 
                     self.learner.optimizer_step(set_zero_grad=True)
-                
+
                 ### Logging out training results
                 logger.info(f"No. batches of tasks processed: {num_task_batches}")
                 logger.info(f"\t(Meta) training loss: {task_batch_loss}")
@@ -304,7 +307,10 @@ class Problyglot(object):
 
                 ### possibly run evaluation of the model
                 if (eval_every_n_iteration and num_task_batches % eval_every_n_iteration == 0):
-                    self.evaluator.run(self.learner, num_task_batches=num_task_batches)
+                    if not hasattr(self, "evaluator"):
+                        logger.warning("Evaluation missing in config - skipping evaluator run")
+                    else: 
+                        self.evaluator.run(self.learner, num_task_batches=num_task_batches)
 
                 if (num_task_batches % max_task_batch_steps == 0):
                     # NOTE: stop training if we've done max_task_batch_steps global update steps
