@@ -222,7 +222,7 @@ class Platipus(BaseLearner):
     # adaptation to classification tasks (e.g. the meta-training task is a classification task)
     def _adapt_params_classification(self, data_batch, params, lm_head_weights, learning_rate,
                                      optimize_classifier=False, clone_params=True,
-                                     evaluation_mode=False):
+                                     evaluation_mode=False, num_inner_steps=-1):
         """ 
         Adapted from: 
         https://github.com/cnguyen10/few_shot_meta_learning
@@ -247,6 +247,8 @@ class Platipus(BaseLearner):
             * clone_params (bool): Whether to clone the params passed in (defaults to True)
             * evaluation_mode (bool): Whether running this method during evaluation
                 (either in finetuning or inference) (defaults to False)
+            * num_inner_steps (int): Possible override of self.num_inner_steps; if not set 
+                defaults to self.num_inner_steps
 
         Returns: 
             * adapted_params (iterable): Iterable of torch.nn.Paramater()s that represent the
@@ -259,7 +261,10 @@ class Platipus(BaseLearner):
         else:
             adapted_params = params
 
-        for _ in range(self.num_inner_steps):
+        if num_inner_steps < 0:
+            num_inner_steps = self.num_inner_steps
+
+        for _ in range(num_inner_steps):
             
             # Running forward pass through functioanl model and computing classificaiton loss
             outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
@@ -420,7 +425,8 @@ class Platipus(BaseLearner):
                                                 lm_head_weights=adapted_lm_head,
                                                 learning_rate=self.inner_lr,
                                                 clone_params=False,
-                                                optimize_classifier=True)
+                                                optimize_classifier=True,
+                                                num_inner_steps=100)
 
         # evaluating on the query batch using the adapted params phi  
         self.functional_model.eval()
