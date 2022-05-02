@@ -27,7 +27,8 @@ class Platipus(BaseLearner):
                                     inner_lr=1e-2,
                                     classifier_lr=1e-1,
                                     kl_weight=0.5,
-                                    num_inner_steps=5,
+                                    num_conditioning_steps=5,
+                                    num_learning_steps=100,
                                     use_first_order=False,
                                     language_embedding_method='val_grad',
                                     *args,
@@ -57,7 +58,10 @@ class Platipus(BaseLearner):
                 * classifier_lr (float): inner-loop learning rate of the classifier head
             * kl_weight (float): Trade-off hyper-parameter between the CE term and the KL term of
                 the ELBO objective 
-            * num_inner_steps (int): Number of gradients steps in the inner looop
+            * num_conditioning_steps (int): Number of gradients steps in the inner loop used to 
+                condition the weights of the model on a given task
+            * num_learning_steps (int): Number of gradients steps in the inner loop used to 
+                learn the meta-learning task 
             * use_first_order (bool): Whether a first order approximation of higher-order gradients
                 should be used (defaults to False)
             * language_embedding_method (str): How to represent the embedding that is used to
@@ -106,8 +110,10 @@ class Platipus(BaseLearner):
         # hyper-param for trading off ce-loss and kl-loss
         self.kl_weight = float(kl_weight)
 
-        # number of steps to perform in the inner loop
-        self.num_inner_steps = int(num_inner_steps)
+        # number of steps to perform in the inner loop for conditioning the model/ learning the 
+        # meta-learning task
+        self.num_conditioning_steps = int(num_conditioning_steps)
+        self.num_learning_steps = int(num_learning_steps)
         
         # set flag to indicate if first-order approximation should be used (à la Reptile)
         if isinstance(use_first_order, str):
@@ -178,7 +184,7 @@ class Platipus(BaseLearner):
     that it meta-learned. 
     """
 
-    def _sample_adapted_weights(self, data_batch, sampling_std, return_adapted_mean=False, 
+    def _sample_adapted_params(self, data_batch, sampling_std, return_adapted_mean=False, 
                                 device=None, **adaptation_kwargs): 
         """ 
         Helper method for sampling model weights that have been adapted to a batch of 
@@ -202,7 +208,7 @@ class Platipus(BaseLearner):
         if device is None:
             device = self.base_device
 
-        adapted_params = self._adapt_params_classification(data_batch, **adaptation_kwargs)
+        adapted_params = self._adapt_params(data_batch, **adaptation_kwargs)
 
         sampled_weights = [None] * len(adapted_params) 
 
@@ -220,9 +226,9 @@ class Platipus(BaseLearner):
             return sampled_weights  
 
     # adaptation to classification tasks (e.g. the meta-training task is a classification task)
-    def _adapt_params_classification(self, data_batch, params, lm_head_weights, learning_rate,
-                                     optimize_classifier=False, clone_params=True,
-                                     evaluation_mode=False, num_inner_steps=-1):
+    def _adapt_params(self, data_batch, params, lm_head_weights, learning_rate, num_inner_steps,
+                            optimize_classifier=False, clone_params=True, evaluation_mode=False,
+                     ):
         """ 
         Adapted from: 
         https://github.com/cnguyen10/few_shot_meta_learning
@@ -242,13 +248,12 @@ class Platipus(BaseLearner):
                 (the params that we want to evaluate our model at)
             * lm_head_weights (dict): Weights of the lm classification head
             * learning_rate (float): The internal learning rate used to update params
+            * num_inner_steps (int): Number of inner steps to use for the adaptation process
             * optimize_classifier (bool): Whether to train the final classification layer as 
                 part of the adaptation process 
             * clone_params (bool): Whether to clone the params passed in (defaults to True)
             * evaluation_mode (bool): Whether running this method during evaluation
                 (either in finetuning or inference) (defaults to False)
-            * num_inner_steps (int): Possible override of self.num_inner_steps; if not set 
-                defaults to self.num_inner_steps
 
         Returns: 
             * adapted_params (iterable): Iterable of torch.nn.Paramater()s that represent the
@@ -260,9 +265,6 @@ class Platipus(BaseLearner):
             adapted_params = [torch.clone(p) for p in params]
         else:
             adapted_params = params
-
-        if num_inner_steps < 0:
-            num_inner_steps = self.num_inner_steps
 
         for _ in range(num_inner_steps):
             
@@ -410,23 +412,25 @@ class Platipus(BaseLearner):
         adapted_lm_head = {key: torch.clone(param) for key, param in self.lm_head.items()}
 
         # sampling theta after adapting model to query_batch
-        mu_theta_query, theta = self._sample_adapted_weights(query_batch, 
-                                                             sampling_std=self.log_v_q,
-                                                             return_adapted_mean=True,
-                                                             params=self.mu_theta,
-                                                             lm_head_weights=self.lm_head,
-                                                             learning_rate=self.gamma_q,
-                                                             clone_params=True,
-                                                             device=device)
+        mu_theta_query, theta = self._sample_adapted_params(
+                                                        query_batch, 
+                                                        sampling_std=self.log_v_q,
+                                                        return_adapted_mean=True,
+                                                        params=self.mu_theta,
+                                                        lm_head_weights=self.lm_head,
+                                                        learning_rate=self.gamma_q,
+                                                        num_inner_steps=self.num_conditioning_steps,
+                                                        clone_params=True,
+                                                        device=device)
 
         # adapting theta to the support set -> adapted params are phi
-        phi = self._adapt_params_classification(support_batch, 
-                                                params=theta, 
-                                                lm_head_weights=adapted_lm_head,
-                                                learning_rate=self.inner_lr,
-                                                clone_params=False,
-                                                optimize_classifier=True,
-                                                num_inner_steps=100)
+        phi = self._adapt_params(support_batch, 
+                                 params=theta, 
+                                 lm_head_weights=adapted_lm_head,
+                                 learning_rate=self.inner_lr,
+                                 num_inner_steps=self.num_learning_steps,
+                                 clone_params=False,
+                                 optimize_classifier=True)
 
         # evaluating on the query batch using the adapted params phi  
         self.functional_model.eval()
@@ -443,11 +447,12 @@ class Platipus(BaseLearner):
         # computing KL loss (requires adapting mu_theta to the support set)
         
         # mu theta adapted to the support set (line 10 from algorithm 1) 
-        mu_theta_support = self._adapt_params_classification(support_batch, 
-                                                             params=self.mu_theta,
-                                                             lm_head_weights=self.lm_head,
-                                                             learning_rate=self.gamma_p,
-                                                             clone_params=True)
+        mu_theta_support = self._adapt_params(support_batch, 
+                                              params=self.mu_theta,
+                                              lm_head_weights=self.lm_head,
+                                              learning_rate=self.gamma_p,
+                                              num_inner_steps=self.num_conditioning_steps,
+                                              clone_params=True)
 
         kl_loss = kl_divergence_gaussians(p=[*mu_theta_query, *self.log_v_q],
                                           q=[*mu_theta_support, *self.log_sigma_theta])
@@ -497,13 +502,14 @@ class Platipus(BaseLearner):
         # NOTE: the adaptation batch is in the same form as the batches of training used 
         # during meta training 
         adaptation_batch = move_to_device(adaptation_batch, self.base_device)
-        sampled_theta = self._sample_adapted_weights(adaptation_batch,
-                                                     sampling_std=self.log_sigma_theta,
-                                                     params=self.mu_theta,
-                                                     lm_head_weights=self.lm_head,
-                                                     learning_rate=self.gamma_p,
-                                                     clone_params=True,
-                                                     evaluation_mode=True)
+        sampled_theta = self._sample_adapted_params(adaptation_batch,
+                                                    sampling_std=self.log_sigma_theta,
+                                                    params=self.mu_theta,
+                                                    lm_head_weights=self.lm_head,
+                                                    learning_rate=self.gamma_p,
+                                                    num_inner_steps=self.num_conditioning_steps,
+                                                    clone_params=True,
+                                                    evaluation_mode=True)
 
         ### Initializing the task head used for the downstream NLU task
         task_init_data_batch = move_to_device(next(iter(finetune_dataloader)), self.base_device)
@@ -590,13 +596,15 @@ class Platipus(BaseLearner):
                 # if adaptation_batch is passed in, we adapt the model's parameters to this data
                 adaptation_batch = move_to_device(adaptation_batch, self.base_device)
 
-                finetuned_params = self._sample_adapted_weights(adaptation_batch, 
-                                                                sampling_std=self.log_sigma_theta,
-                                                                params=finetuned_params,
-                                                                lm_head_weights=self.lm_head,
-                                                                learning_rate=self.gamma_p,
-                                                                clone_params=True,
-                                                                evaluation_mode=True)
+                finetuned_params = self._sample_adapted_params(
+                                                        adaptation_batch, 
+                                                        sampling_std=self.log_sigma_theta,
+                                                        params=finetuned_params,
+                                                        lm_head_weights=self.lm_head,
+                                                        learning_rate=self.gamma_p,
+                                                        num_inner_steps=self.num_conditioning_steps,
+                                                        clone_params=True,
+                                                        evaluation_mode=True)
         
         predictions = []
         total_loss = 0.0
