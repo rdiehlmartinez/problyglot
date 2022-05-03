@@ -239,3 +239,122 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         """
         raise NotImplementedError()
 
+
+
+class MetaBaseLearner(BaseLearner):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def functionalize_model(self):
+        """ Helper function for converting base_model into a functionalized form"""
+        self.functional_model = higher.patch.make_functional(module=self.base_model)
+
+        # NOTE: these two lines are SUPER important (otherwise computation graph explodes)
+        self.functional_model.track_higher_grads = False
+        self.functional_model._fast_params = [[]]
+
+    # Overriding nn.Module functionality 
+    def state_dict(self):
+        """
+        Overriding method to remove placeholder parameters defined by functional model. Called 
+        implicitly when saving and loading checkpoints.
+        """
+        original_state_dict = super().state_dict()
+        updated_state_dict = OrderedDict()
+
+        for key, val in original_state_dict.items():
+            if "functional" in key:
+                continue
+            
+            updated_state_dict[key] = val
+        
+        return updated_state_dict
+
+    # Helper function for adapting the functionalized parameters based on some data_batch
+    def _adapt_params(self, data_batch, params, lm_head_weights, learning_rate, num_inner_steps,
+                            optimize_classifier=False, clone_params=True, evaluation_mode=False,
+                     ):
+        """ 
+        Adapted from: 
+        https://github.com/cnguyen10/few_shot_meta_learning
+
+        For a given batch of inputs and labels, we compute what the loss of the functional model 
+        would be if the weights of the model are set to params.  
+        
+        Note that this is the main reason that we have to convert the base model to a functional
+        version of the model that can take in its parameters as an argument
+        (as opposed to these parameters being stored in the model's state). 
+
+        The parameters are then updated using SGD with a given learning rate, and returned. 
+
+        Params:
+            * data_batch (dict): Batch of data for a forward pass through the model 
+                (see run_inner_loop for information on the data structure)
+            * params (iterable): Iterable of torch.nn.Paramater()s
+                (the params that we want to evaluate our model at)
+            * lm_head_weights (dict): Weights of the lm classification head
+            * learning_rate (float): The internal learning rate used to update params
+            * num_inner_steps (int): Number of inner steps to use for the adaptation process
+            * optimize_classifier (bool): Whether to train the final classification layer as 
+                part of the adaptation process 
+            * clone_params (bool): Whether to clone the params passed in (defaults to True)
+            * evaluation_mode (bool): Whether running this method during evaluation
+                (either in finetuning or inference) (defaults to False)
+
+        Returns: 
+            * adapted_params (iterable): Iterable of torch.nn.Paramater()s that represent the
+                updated the parameters after running SGD 
+        """                                        
+
+        if clone_params:
+            # copy the parameters but allow gradients to propagate back to original params
+            adapted_params = [torch.clone(p) for p in params]
+        else:
+            adapted_params = params
+
+        for _ in range(num_inner_steps):
+            
+            # Running forward pass through functioanl model and computing classificaiton loss
+            outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
+                                                    attention_mask=data_batch['attention_mask'],
+                                                    params=adapted_params)
+
+            _, loss = self._compute_task_loss(outputs, data_batch, lm_head_weights,
+                                              task_type='classification')
+                                                        
+            # Computing resulting gradients of the inner loop
+            grad_params = [p for p in adapted_params if p.requires_grad]
+
+            if self.use_first_order or evaluation_mode:
+                grads = torch.autograd.grad(
+                    outputs=loss,
+                    inputs=grad_params,
+                    retain_graph=True,
+                )
+            else:
+                grads = torch.autograd.grad(
+                    outputs=loss,
+                    inputs=grad_params,
+                    create_graph=True,
+                )
+
+            # updating params
+            grad_counter = 0
+            for i, p in enumerate(adapted_params):
+                if p.requires_grad:
+                    adapted_params[i] = adapted_params[i] - learning_rate * grads[grad_counter]
+                    grad_counter += 1
+
+            # optionally use SGD to update the weights of the final linear classification layer
+            # should only be done once we've already sampled phi weights
+            if optimize_classifier:
+                classifier_grads = torch.autograd.grad(
+                    outputs=loss,
+                    inputs=lm_head_weights.values(),
+                )
+                for idx, weight_name in enumerate(lm_head_weights.keys()):
+                    lm_head_weights[weight_name] = lm_head_weights[weight_name] - \
+                                                    self.classifier_lr * classifier_grads[idx]
+
+        return adapted_params
