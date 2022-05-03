@@ -20,7 +20,7 @@
 #SBATCH --ntasks=1
 #! Specify the number of GPUs per node (between 1 and 4; must be 4 if nodes>1).
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:4
 #! How much wallclock time will be required?
 #SBATCH --time=12:00:00
 #! What types of email messages do you wish to receive?
@@ -66,6 +66,7 @@ workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the
 #! Are you using OpenMP (NB this is unrelated to OpenMPI)? If so increase this
 #! safe value to no more than 128:
 export OMP_NUM_THREADS=1
+
 
 #! Number of MPI tasks to be started by the application per node and in total (do not change):
 np=$[${numnodes}*${mpi_tasks_per_node}]
