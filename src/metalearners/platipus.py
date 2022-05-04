@@ -126,8 +126,7 @@ class Platipus(MetaBaseLearner):
     def meta_params_iter(self):
         """ Returns an iterator over all of the meta parameters"""
         return itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, 
-                               [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr],
-                               self.lm_head.values())
+                               [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr])
 
     def get_task_init_kwargs(self, task_init_method, n_labels, **kwargs):
         """ 
@@ -291,9 +290,16 @@ class Platipus(MetaBaseLearner):
         # Moving data to appropriate device
         support_batch = move_to_device(support_batch, device)
         query_batch = move_to_device(query_batch, device)
-       
-        # cloning LM head in order to be locally adapted
+
+        # Setting up LM head for task training
+        init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
+                                                data_batch=support_batch, device=device)
+        lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                method=self.lm_head_init_method,
+                                                init_kwargs=init_kwargs)
+        
         adapted_lm_head = {key: torch.clone(param) for key, param in self.lm_head.items()}
+
 
         # sampling theta after adapting model to query_batch
         mu_theta_query, theta = self._sample_adapted_params(
@@ -301,7 +307,7 @@ class Platipus(MetaBaseLearner):
                                                         sampling_std=self.log_v_q,
                                                         return_adapted_mean=True,
                                                         params=self.mu_theta,
-                                                        lm_head_weights=self.lm_head,
+                                                        lm_head_weights=adapted_lm_head,
                                                         learning_rate=self.gamma_q,
                                                         num_inner_steps=self.num_conditioning_steps,
                                                         clone_params=True,
@@ -333,7 +339,7 @@ class Platipus(MetaBaseLearner):
         # mu theta adapted to the support set (line 10 from algorithm 1) 
         mu_theta_support = self._adapt_params(support_batch, 
                                               params=self.mu_theta,
-                                              lm_head_weights=self.lm_head,
+                                              lm_head_weights=lm_head,
                                               learning_rate=self.gamma_p,
                                               num_inner_steps=self.num_conditioning_steps,
                                               clone_params=True)
@@ -386,10 +392,16 @@ class Platipus(MetaBaseLearner):
         # NOTE: the adaptation batch is in the same form as the batches of training used 
         # during meta training 
         adaptation_batch = move_to_device(adaptation_batch, self.base_device)
+        lm_init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
+                                                   data_batch=adaptation_batch)
+        lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                method=self.lm_head_init_method,
+                                                init_kwargs=lm_init_kwargs)
+
         sampled_theta = self._sample_adapted_params(adaptation_batch,
                                                     sampling_std=self.log_sigma_theta,
                                                     params=self.mu_theta,
-                                                    lm_head_weights=self.lm_head,
+                                                    lm_head_weights=lm_head,
                                                     learning_rate=self.gamma_p,
                                                     num_inner_steps=self.num_conditioning_steps,
                                                     clone_params=True,
@@ -397,11 +409,11 @@ class Platipus(MetaBaseLearner):
 
         ### Initializing the task head used for the downstream NLU task
         task_init_data_batch = move_to_device(next(iter(finetune_dataloader)), self.base_device)
-        init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_labels=n_labels,
-                                                data_batch=task_init_data_batch)
+        task_init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_labels=n_labels,
+                                                     data_batch=task_init_data_batch)
         task_head_weights = TaskHead.initialize_task_head(task_type=task_type,
                                                           method=task_head_init_method,
-                                                          init_kwargs=init_kwargs)
+                                                          init_kwargs=task_init_kwargs)
 
         # detaching parameters from original computation graph to create new leaf variables
         finetuned_theta = []
@@ -479,12 +491,17 @@ class Platipus(MetaBaseLearner):
         if adaptation_batch is not None:
                 # if adaptation_batch is passed in, we adapt the model's parameters to this data
                 adaptation_batch = move_to_device(adaptation_batch, self.base_device)
-
+                lm_init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method,
+                                                           self.lm_head_n,
+                                                           data_batch=adaptation_batch)
+                lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                        method=self.lm_head_init_method,
+                                                        init_kwargs=lm_init_kwargs)
                 finetuned_params = self._sample_adapted_params(
                                                         adaptation_batch, 
                                                         sampling_std=self.log_sigma_theta,
                                                         params=finetuned_params,
-                                                        lm_head_weights=self.lm_head,
+                                                        lm_head_weights=lm_head,
                                                         learning_rate=self.gamma_p,
                                                         num_inner_steps=self.num_conditioning_steps,
                                                         clone_params=True,

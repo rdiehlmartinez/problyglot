@@ -14,7 +14,7 @@ from ..taskheads import TaskHead, ClassificationHead
 
 class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
-    def __init__(self, base_model, base_device, lm_head_init_method='random', lm_head_n=5,
+    def __init__(self, base_model, base_device, lm_head_init_method='protomaml', lm_head_n=100,
                  **kwargs):
         """
         BaseLearner establishes the inferface for the learner class and 
@@ -42,16 +42,15 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         # NOTE: the platipus model uses the language modeling task head for weight adaptation
         # even during evaluation on some downstream NLU task
 
-        assert ("protomaml" not in lm_head_init_method),\
-            "The language modeling task head cannot be initialized using a protomaml approach"
-        init_kwargs = self.get_task_init_kwargs(lm_head_init_method, lm_head_n)
-        self.lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                     method=lm_head_init_method,
-                                                     init_kwargs=init_kwargs)
+        if lm_head_init_method != "protomaml": 
+            logger.warning("LM head initialization method is not protomaml (NOT RECOMMENDED)")
+        self.lm_head_init_method = lm_head_init_method
+        self.lm_head_n = lm_head_n
 
     ###### Task head initialization methods ######
 
-    def get_task_init_kwargs(self, task_init_method, n_labels, data_batch=None, **kwargs):
+    def get_task_init_kwargs(self, task_init_method, n_labels, data_batch=None, device=None,
+                             **kwargs):
         """ 
         Helper method for generating keyword arguments that can be passed into a task head 
         initialization method
@@ -61,6 +60,8 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
             * n_labels (int): Number of labels defined by the task (i.e. classes)
             * data_batch (dict): Batch of data used to initialize the task head if using 
                 the protomaml task_init_method
+            * device (str): Device type used to initialize the task head with, if not 
+                specified defaults to self.base_device
 
         Returns:
             * init_kwargs (dict): Keyword arguments used by the task head initialization function 
@@ -70,7 +71,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
         init_kwargs['base_model_hidden_dim'] = self.base_model_hidden_dim
         init_kwargs['n_labels'] = n_labels
-        init_kwargs['device'] = self.base_device 
+        init_kwargs['device'] = deivce if device is not None else self.base_device 
 
         if 'protomaml' in task_init_method:
             assert(data_batch is not None),\

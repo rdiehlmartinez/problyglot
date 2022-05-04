@@ -86,11 +86,7 @@ class Problyglot(object):
         logger.info(f"Using learner: {learner_method}")
 
         learner_kwargs = dict(self.config.items("LEARNER"))
-        if 'LANGUAGE_TASK' in self.config: 
-            learner_kwargs['lm_head_n'] = self.config.getint("LANGUAGE_TASK", "n")
-        else:
-            assert(learner_method != "platipus"),\
-                "Platipus requires LANGUAGE_TASK config section to be specified"
+        learner_kwargs['lm_head_n'] = self.config.getint("LANGUAGE_TASK", "n")
 
         if learner_method == 'platipus':
             learner_cls = Platipus
