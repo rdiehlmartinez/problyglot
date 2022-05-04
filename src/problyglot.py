@@ -11,7 +11,7 @@ import os
 import torch.multiprocessing as mp
 
 from .models import XLMR
-from .metalearners import Platipus, BaselineLearner
+from .metalearners import Platipus, MAML, BaselineLearner
 from .evaluation import Evaluator
 from .utils import device as DEFAULT_DEVICE, num_gpus
 from .datasets import MetaDataset, MetaDataLoader
@@ -94,6 +94,8 @@ class Problyglot(object):
 
         if learner_method == 'platipus':
             learner_cls = Platipus
+        elif learner_method == 'maml':
+            learner_cls = MAML
         elif learner_method == 'baseline': 
             learner_cls = BaselineLearner
         else:
@@ -202,9 +204,11 @@ class Problyglot(object):
                 # and the learning procedure of the hyper-parameters
                 wandb.define_metric("train.loss_ce", step_metric="num_task_batches", summary='min')
                 wandb.define_metric("train.loss_kl", step_metric="num_task_batches", summary='min')
-
                 wandb.define_metric("gamma_p", step_metric="num_task_batches")
                 wandb.define_metric("gamma_q", step_metric="num_task_batches")
+
+            if self.learner_method != "baseline":
+                # any meta-learning approach will want to track the learned learning rates
                 wandb.define_metric("classifier_lr", step_metric="num_task_batches")
                 wandb.define_metric("inner_lr", step_metric="num_task_batches")
 
@@ -290,8 +294,13 @@ class Problyglot(object):
                         wandb.log({"train.loss_ce": task_batch_ce_loss,
                                    "train.loss_kl": task_batch_kl_loss,
                                    "gamma_p": self.learner.gamma_p.item(),
-                                   "gamma_q": self.learner.gamma_q.item(),
-                                   "classifier_lr": self.learner.classifier_lr.item(), 
+                                   "gamma_q": self.learner.gamma_q.item()},
+                                   commit=False
+                                  )
+                    
+                    if self.learner_method != "baseline": 
+                        # wandb logging info for any meta-learner
+                        wandb.log({"classifier_lr": self.learner.classifier_lr.item(), 
                                    "inner_lr": self.learner.inner_lr.item()},
                                    commit=False
                                   )

@@ -85,10 +85,6 @@ class MAML(MetaBaseLearner):
         return itertools.chain(self.model_params, [self.inner_lr, self.classifier_lr],
                                self.lm_head.values())
 
-    def parameters(self):
-        """ Overriding parent behavior to only return meta parameters """
-        return self.meta_params_iter()
-
     def get_task_init_kwargs(self, task_init_method, n_labels, **kwargs):
         """ 
         Override base implementation of this method to replace the model with the functional 
