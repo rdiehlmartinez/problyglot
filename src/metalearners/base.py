@@ -2,8 +2,9 @@ __author__ = 'Richard Diehl Martinez'
 """ Interface class for (meta) learners """
 
 import abc 
-import os
+import higher 
 import math
+import os
 
 import torch
 import torch.distributed as dist
@@ -240,11 +241,18 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         raise NotImplementedError()
 
 
-
 class MetaBaseLearner(BaseLearner):
 
     def __init__(self, *args, **kwargs):
+        """ 
+        Inherents from BaseLearner and establishes the base class for all meta-learners 
+        (e.g. maml and platipus). Provides useful functionality for meta-learners which
+        rely on the torch higher library to maintain a functionalized version of the model 
+        with corresponding parameters that are clones and fed into the functionalized model.
+        """
         super().__init__(*args, **kwargs)
+
+    ### Base setup functionality for meta learning models
 
     def functionalize_model(self):
         """ Helper function for converting base_model into a functionalized form"""
@@ -253,6 +261,15 @@ class MetaBaseLearner(BaseLearner):
         # NOTE: these two lines are SUPER important (otherwise computation graph explodes)
         self.functional_model.track_higher_grads = False
         self.functional_model._fast_params = [[]]
+
+    def parameters(self):
+        """ Overriding parent behavior to only return meta parameters """
+        return self.meta_params_iter()
+
+    @abc.abstractmethod
+    def meta_params_iter(self):
+        """ Returns an iterator over all of the meta parameters"""
+        raise NotImplementedError()
 
     # Overriding nn.Module functionality 
     def state_dict(self):
@@ -271,7 +288,7 @@ class MetaBaseLearner(BaseLearner):
         
         return updated_state_dict
 
-    # Helper function for adapting the functionalized parameters based on some data_batch
+    ### Helper function for adapting the functionalized parameters based on some data_batch
     def _adapt_params(self, data_batch, params, lm_head_weights, learning_rate, num_inner_steps,
                             optimize_classifier=False, clone_params=True, evaluation_mode=False,
                      ):
