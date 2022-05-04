@@ -6,6 +6,7 @@ Implements Model Agnostic Meta Learning: https://arxiv.org/abs/1703.03400
 import time
 import higher 
 import itertools
+import logging
 
 from collections import OrderedDict
 from multiprocessing.queues import Empty as EmptyQueue
@@ -16,6 +17,8 @@ import torch.distributed as dist
 from .base import MetaBaseLearner
 from ..taskheads import TaskHead
 from ..utils import move_to_device
+
+logger = logging.getLogger(__name__)
 
 class MAML(MetaBaseLearner):
     def __init__(self, base_model,  optimizer_type='adam',
@@ -82,8 +85,7 @@ class MAML(MetaBaseLearner):
 
     def meta_params_iter(self):
         """ Returns an iterator over all of the meta parameters"""
-        return itertools.chain(self.model_params, [self.inner_lr, self.classifier_lr],
-                               self.lm_head.values())
+        return itertools.chain(self.model_params, [self.inner_lr, self.classifier_lr])
 
     def get_task_init_kwargs(self, task_init_method, n_labels, **kwargs):
         """ 
@@ -195,13 +197,17 @@ class MAML(MetaBaseLearner):
         support_batch = move_to_device(support_batch, device)
         query_batch = move_to_device(query_batch, device)
        
-        # cloning LM head in order to be locally adapted
-        adapted_lm_head = {key: torch.clone(param) for key, param in self.lm_head.items()}
-
+        # Setting up LM head for task training
+        init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
+                                                data_batch=support_batch, device=device)
+        lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                method=self.lm_head_init_method,
+                                                init_kwargs=init_kwargs)
+        
         # adapting params to the support set -> adapted params are phi
         phi = self._adapt_params(support_batch, 
                                  params=self.model_params, 
-                                 lm_head_weights=adapted_lm_head,
+                                 lm_head_weights=lm_head,
                                  learning_rate=self.inner_lr,
                                  num_inner_steps=self.num_learning_steps,
                                  clone_params=True,
@@ -216,8 +222,8 @@ class MAML(MetaBaseLearner):
 
         self.functional_model.train()
 
-        _, loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
-                                             task_type='classification')
+        _, loss = self._compute_task_loss(outputs, query_batch, lm_head, 
+                                          task_type='classification')
         return loss
 
 

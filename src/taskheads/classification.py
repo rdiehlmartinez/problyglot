@@ -2,11 +2,15 @@ __author__ = 'Richard Diehl Martinez'
 """ Defines a task head for classification tasks """
 
 import math 
+import logging 
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F 
 
 from .base import TaskHead
+
+logger = logging.getLogger(__name__)
 
 class ClassificationHead(TaskHead):
     """ Task head for classification tasks"""

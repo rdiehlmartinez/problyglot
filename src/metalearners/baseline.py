@@ -4,6 +4,7 @@ __author__ = 'Richard Diehl Martinez'
 import copy
 import itertools
 import time
+import logging
 
 from multiprocessing.queues import Empty as EmptyQueue
 
@@ -13,6 +14,8 @@ import torch.distributed as dist
 from .base import BaseLearner
 from ..taskheads import TaskHead
 from ..utils import move_to_device
+
+logger = logging.getLogger(__name__)
 
 class BaselineLearner(BaseLearner):
 
@@ -31,9 +34,8 @@ class BaselineLearner(BaseLearner):
 
         # setting up optimizer
         base_params = [p for p in self.base_model.parameters() if p.requires_grad]
-        all_params = itertools.chain(base_params, self.lm_head.values())
         if optimizer_type == 'adam': 
-            self.optimizer = torch.optim.Adam(params=all_params, lr=float(lr))
+            self.optimizer = torch.optim.Adam(params=base_params, lr=float(lr))
         else: 
             logger.exception(f"Invalid optimizer type: {optimizer_type}")
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
@@ -174,10 +176,16 @@ class BaselineLearner(BaseLearner):
         else: 
             input_batch = support_batch
 
+        init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
+                                                data_batch=input_batch, device=device)
+        lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                method=self.lm_head_init_method,
+                                                init_kwargs=init_kwargs)
+
         outputs = self.base_model(input_ids=input_batch['input_ids'],
                                   attention_mask=input_batch['attention_mask'])
 
-        _, loss = self._compute_task_loss(outputs, input_batch, self.lm_head,
+        _, loss = self._compute_task_loss(outputs, input_batch, lm_head, 
                                           task_type='classification')
 
         return loss

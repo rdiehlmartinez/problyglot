@@ -7,6 +7,7 @@ Adapted from: https://github.com/cnguyen10/few_shot_meta_learning
 import time
 import higher 
 import itertools
+import logging
 
 from collections import OrderedDict
 from multiprocessing.queues import Empty as EmptyQueue
@@ -18,6 +19,8 @@ from .base import MetaBaseLearner
 from ..taskheads import TaskHead
 from ..utils.modeling import kl_divergence_gaussians
 from ..utils import move_to_device
+
+logger = logging.getLogger(__name__)
 
 class Platipus(MetaBaseLearner):
     def __init__(self, base_model,  optimizer_type='adam',
@@ -298,7 +301,7 @@ class Platipus(MetaBaseLearner):
                                                 method=self.lm_head_init_method,
                                                 init_kwargs=init_kwargs)
         
-        adapted_lm_head = {key: torch.clone(param) for key, param in self.lm_head.items()}
+        adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
 
 
         # sampling theta after adapting model to query_batch

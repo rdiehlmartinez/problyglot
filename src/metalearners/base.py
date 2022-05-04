@@ -5,12 +5,15 @@ import abc
 import higher 
 import math
 import os
+import logging
 
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from ..taskheads import TaskHead, ClassificationHead
+
+logger = logging.getLogger(__name__)
 
 class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
@@ -25,8 +28,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
             * base_device (str): what device to use for training (either 'cpu' or 'gpu) 
             * language_head_init_method (str): How to initialize the language head classifier layer
             * lm_head_n (int): Size of n-way classification used for generating the language 
-                modeling tasks used for training and conditioning the platipus model on a 
-                given language  
+                modeling tasks used for training.
 
         """
         super().__init__()
@@ -71,7 +73,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
         init_kwargs['base_model_hidden_dim'] = self.base_model_hidden_dim
         init_kwargs['n_labels'] = n_labels
-        init_kwargs['device'] = deivce if device is not None else self.base_device 
+        init_kwargs['device'] = device if device is not None else self.base_device 
 
         if 'protomaml' in task_init_method:
             assert(data_batch is not None),\
