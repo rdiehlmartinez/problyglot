@@ -217,7 +217,7 @@ class BaselineLearner(BaseLearner):
 
         ### Initializing the task head used for the downstream NLU task
         task_init_data_batch = move_to_device(next(iter(finetune_dataloader)), self.base_device)
-        init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_labels=n_labels,
+        init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_labels,
                                                 data_batch=task_init_data_batch)
         task_head_weights = TaskHead.initialize_task_head(task_type=task_type,
                                                           method=task_head_init_method,

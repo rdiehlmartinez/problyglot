@@ -204,10 +204,13 @@ class MAML(MetaBaseLearner):
                                                 method=self.lm_head_init_method,
                                                 init_kwargs=init_kwargs)
         
+        # NOTE: anytime we update the lm head we need to clone the params
+        adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
+
         # adapting params to the support set -> adapted params are phi
         phi = self._adapt_params(support_batch, 
                                  params=self.model_params, 
-                                 lm_head_weights=lm_head,
+                                 lm_head_weights=adapted_lm_head,
                                  learning_rate=self.inner_lr,
                                  num_inner_steps=self.num_learning_steps,
                                  clone_params=True,
@@ -222,7 +225,7 @@ class MAML(MetaBaseLearner):
 
         self.functional_model.train()
 
-        _, loss = self._compute_task_loss(outputs, query_batch, lm_head, 
+        _, loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
                                           task_type='classification')
         return loss
 
@@ -259,7 +262,7 @@ class MAML(MetaBaseLearner):
 
         ### Initializing the task head used for the downstream NLU task
         task_init_data_batch = move_to_device(next(iter(finetune_dataloader)), self.base_device)
-        init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_labels=n_labels,
+        init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_labels,
                                                 data_batch=task_init_data_batch)
         task_head_weights = TaskHead.initialize_task_head(task_type=task_type,
                                                           method=task_head_init_method,
