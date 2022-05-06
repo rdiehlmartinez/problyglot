@@ -86,6 +86,8 @@ class Problyglot(object):
         logger.info(f"Using learner: {learner_method}")
 
         learner_kwargs = dict(self.config.items("LEARNER"))
+        # NOTE: Size of lm head classification task is taken from LANGUAGE_TASK
+        # Technically, could be set to a separate value but unclear what the use-case would be
         learner_kwargs['lm_head_n'] = self.config.getint("LANGUAGE_TASK", "n")
 
         if learner_method == 'platipus':

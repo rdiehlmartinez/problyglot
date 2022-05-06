@@ -129,7 +129,8 @@ class Platipus(MetaBaseLearner):
     def meta_params_iter(self):
         """ Returns an iterator over all of the meta parameters"""
         return itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, 
-                               [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr])
+                               [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr],
+                               self.retained_lm_head.values() if self.retain_lm_head else [])
 
     def get_task_init_kwargs(self, task_init_method, n_labels, **kwargs):
         """ 
@@ -160,8 +161,7 @@ class Platipus(MetaBaseLearner):
     def _sample_adapted_params(self, data_batch, sampling_std, return_adapted_mean=False, 
                                 device=None, **adaptation_kwargs): 
         """ 
-        Helper method for sampling model weights that have been adapted to a batch of 
-        data. 
+        Helper method for sampling model weights that have been adapted to a batch of data. 
 
         Args: 
             * data_batch (dict): Batch of data for a forward pass through the model 
@@ -295,12 +295,15 @@ class Platipus(MetaBaseLearner):
         query_batch = move_to_device(query_batch, device)
 
         # Setting up LM head for task training
-        init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
-                                                data_batch=support_batch, device=device)
-        lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                method=self.lm_head_init_method,
-                                                init_kwargs=init_kwargs)
-        
+        if self.retain_lm_head:
+            lm_head = self.retained_lm_head
+        else: 
+            init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
+                                                    data_batch=support_batch, device=device)
+            lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                    method=self.lm_head_init_method,
+                                                    init_kwargs=init_kwargs)
+            
         adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
 
 
@@ -394,12 +397,16 @@ class Platipus(MetaBaseLearner):
         ### Sampling weights from mu_theta using the passed in adaptation_batch 
         # NOTE: the adaptation batch is in the same form as the batches of training used 
         # during meta training 
-        adaptation_batch = move_to_device(adaptation_batch, self.base_device)
-        lm_init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
-                                                   data_batch=adaptation_batch)
-        lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                method=self.lm_head_init_method,
-                                                init_kwargs=lm_init_kwargs)
+
+        if self.retain_lm_head:
+            lm_head = self.retained_lm_head
+        else:
+            adaptation_batch = move_to_device(adaptation_batch, self.base_device)
+            lm_init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
+                                                    data_batch=adaptation_batch)
+            lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                    method=self.lm_head_init_method,
+                                                    init_kwargs=lm_init_kwargs)
 
         sampled_theta = self._sample_adapted_params(adaptation_batch,
                                                     sampling_std=self.log_sigma_theta,
@@ -493,13 +500,17 @@ class Platipus(MetaBaseLearner):
 
         if adaptation_batch is not None:
                 # if adaptation_batch is passed in, we adapt the model's parameters to this data
-                adaptation_batch = move_to_device(adaptation_batch, self.base_device)
-                lm_init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method,
-                                                           self.lm_head_n,
-                                                           data_batch=adaptation_batch)
-                lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                        method=self.lm_head_init_method,
-                                                        init_kwargs=lm_init_kwargs)
+
+                if self.retain_lm_head:
+                    lm_head = self.retained_lm_head
+                else:
+                    adaptation_batch = move_to_device(adaptation_batch, self.base_device)
+                    lm_init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method,
+                                                            self.lm_head_n,
+                                                            data_batch=adaptation_batch)
+                    lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                            method=self.lm_head_init_method,
+                                                            init_kwargs=lm_init_kwargs)
                 finetuned_params = self._sample_adapted_params(
                                                         adaptation_batch, 
                                                         sampling_std=self.log_sigma_theta,

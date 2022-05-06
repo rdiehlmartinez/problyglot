@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
     def __init__(self, base_model, base_device, lm_head_init_method='protomaml', lm_head_n=100,
-                 **kwargs):
+                 retain_lm_head=False, **kwargs):
         """
         BaseLearner establishes the inferface for the learner class and 
         inherents from torch.nn.Module. 
@@ -29,6 +29,9 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
             * language_head_init_method (str): How to initialize the language head classifier layer
             * lm_head_n (int): Size of n-way classification used for generating the language 
                 modeling tasks used for training.
+            * retain_lm_head (bool): Indicate whether we should maintain a single task head 
+                that is learned over the course of meta training, or whether for each task we 
+                should initialie a new task head.
 
         """
         super().__init__()
@@ -40,14 +43,30 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
         self.base_device = base_device
 
-        # Initializing the task head used for language modeling 
-        # NOTE: the platipus model uses the language modeling task head for weight adaptation
-        # even during evaluation on some downstream NLU task
-
-        if lm_head_init_method != "protomaml": 
-            logger.warning("LM head initialization method is not protomaml (NOT RECOMMENDED)")
         self.lm_head_init_method = lm_head_init_method
-        self.lm_head_n = lm_head_n
+        self.lm_head_n = int(lm_head_n)
+
+        if isinstance(retain_lm_head, str):
+            retain_lm_head = eval(retain_lm_head)
+        self.retain_lm_head = retain_lm_head
+
+        if self.retain_lm_head: 
+            # If we only keep a single task head, then there is no obvious way how to initialize 
+            # the task head with protomaml 
+            assert("protomaml" not in self.lm_head_init_method),\
+                "retain_task_head cannot be used with protomaml lm head initialization"
+            init_kwargs = self.get_task_init_kwargs(lm_head_init_method, lm_head_n)
+            self.retained_lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                                  method=lm_head_init_method,
+                                                                  init_kwargs=init_kwargs)
+
+        else: 
+            # If we are re-initializing the LM head for each training task, then we should use 
+            # protomaml (but it is still possible to use a random initialization)
+            if lm_head_init_method != "protomaml": 
+                logger.warning("LM head will be reinitialized without protomaml (NOT RECOMMENDED)")
+
+        logger.info(f"LM head retaining set to: {self.retain_lm_head}")
 
     ###### Task head initialization methods ######
 
@@ -88,9 +107,9 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
     @staticmethod
     def _compute_task_loss(model_outputs, data_batch, task_head_weights, task_type):
         """
-        Helper function for computing the task loss on a given batch of data. We 
-        assume that the data has already been passed through the base_model - the result of which
-        is model_outputs (i.e. the final layer's hidden states). 
+        Helper function for computing the task loss on a given batch of data. We assume that the 
+        data has already been passed through the base_model - the result of which is model_outputs
+        (i.e. the final layer's hidden states). 
 
         Args: 
             * model_outputs (torch.Tensor): Result of passing data_batch through the 
@@ -124,8 +143,8 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
     def optimizer_step(self, set_zero_grad=False):
         """ 
-        Take a global update step of the meta learner params; optionally set the 
-        gradients of the meta learner gradient tape back to zero 
+        Take a global update step of the meta learner params; optionally set the gradients of the 
+        meta learner gradient tape back to zero.
         """
         assert(hasattr(self, 'optimizer')),\
             "Learner cannot take optimizer step - needs to define an optimizer attribute"

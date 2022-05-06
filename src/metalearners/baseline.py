@@ -34,12 +34,13 @@ class BaselineLearner(BaseLearner):
 
         # setting up optimizer
         base_params = [p for p in self.base_model.parameters() if p.requires_grad]
+        all_params = itertools.chain(base_params, 
+                                     self.retained_lm_head.values() if self.retain_lm_head else [])
         if optimizer_type == 'adam': 
-            self.optimizer = torch.optim.Adam(params=base_params, lr=float(lr))
+            self.optimizer = torch.optim.Adam(params=all_params, lr=float(lr))
         else: 
             logger.exception(f"Invalid optimizer type: {optimizer_type}")
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
-
 
     ###### Model training methods ######
 
@@ -176,11 +177,14 @@ class BaselineLearner(BaseLearner):
         else: 
             input_batch = support_batch
 
-        init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
-                                                data_batch=input_batch, device=device)
-        lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                method=self.lm_head_init_method,
-                                                init_kwargs=init_kwargs)
+        if self.retain_lm_head:
+            lm_head = self.retained_lm_head
+        else:
+            init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
+                                                    data_batch=input_batch, device=device)
+            lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                    method=self.lm_head_init_method,
+                                                    init_kwargs=init_kwargs)
 
         outputs = self.base_model(input_ids=input_batch['input_ids'],
                                   attention_mask=input_batch['attention_mask'])
