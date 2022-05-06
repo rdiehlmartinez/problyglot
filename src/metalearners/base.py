@@ -55,7 +55,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
             # the task head with protomaml 
             assert("protomaml" not in self.lm_head_init_method),\
                 "retain_task_head cannot be used with protomaml lm head initialization"
-            init_kwargs = self.get_task_init_kwargs(lm_head_init_method, lm_head_n)
+            init_kwargs = self.get_task_init_kwargs(lm_head_init_method, self.lm_head_n)
             self.retained_lm_head = TaskHead.initialize_task_head(task_type='classification',
                                                                   method=lm_head_init_method,
                                                                   init_kwargs=init_kwargs)

@@ -9,13 +9,13 @@ from collections import defaultdict
 from torch.utils.data import IterableDataset
 
 from .metadataset import IterableLanguageTaskDataset, SPECIAL_TOKEN_IDS
-from .metadataloader import meta_collate
+from .metadataloader import MetaCollator
 
 logger = logging.getLogger(__name__)
 
 # static method for generating N-way k-shot self-supervised meta learning tasks 
 generate_N_K_samples = IterableLanguageTaskDataset.generate_N_K_samples
-
+meta_collate = MetaCollator(return_standard_labels=False)
 
 class NLUDatasetGenerator(metaclass=abc.ABCMeta):
 

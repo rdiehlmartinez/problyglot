@@ -45,7 +45,6 @@ class MetaDataset(IterableDataset):
         used for training the meta learning model which is later applied to 
         downstream NLU tasks. 
         """
-
         logger.info(f"Initializing MetaDataset")
 
         languages = self._get_languages(config)

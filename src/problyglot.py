@@ -36,7 +36,12 @@ class Problyglot(object):
         # setting up meta dataset for training if provided in config
         if 'META_DATASET' in config:
             self.meta_dataset = MetaDataset(config)
-            self.meta_dataloader = MetaDataLoader(self.meta_dataset)
+
+            self.return_standard_labels = config.getboolean("META_DATASET",
+                                                            "return_standard_labels",
+                                                            fallback=False)
+            self.meta_dataloader = MetaDataLoader(self.meta_dataset, return_standard_labels=\
+                                                                     self.return_standard_labels)
 
         # Setting device 
         self.base_device = config.get("PROBLYGLOT", "device", fallback=DEFAULT_DEVICE)
@@ -86,9 +91,17 @@ class Problyglot(object):
         logger.info(f"Using learner: {learner_method}")
 
         learner_kwargs = dict(self.config.items("LEARNER"))
-        # NOTE: Size of lm head classification task is taken from LANGUAGE_TASK
-        # Technically, could be set to a separate value but unclear what the use-case would be
-        learner_kwargs['lm_head_n'] = self.config.getint("LANGUAGE_TASK", "n")
+
+        if hasattr(self, "return_standard_labels") and self.return_standard_labels: 
+            # The final classification layer of the learner is over the entire vocab,
+            # thus cannot infer the size of the classication layer from the LANGUAGE_TASK config
+            assert("lm_head_n" in learner_kwargs),\
+                "Must defined lm_head_n in LEARNER config (cannot be inferred)"
+        else: 
+            # NOTE: If not defined, size of lm head classification task is taken from LANGUAGE_TASK
+            if "lm_head_n" not in learner_kwargs:
+                logger.info("Attempting to infer lm_head_n from LANGUAGE_TASK config")
+                learner_kwargs['lm_head_n'] = self.config.getint("LANGUAGE_TASK", "n")
 
         if learner_method == 'platipus':
             learner_cls = Platipus
