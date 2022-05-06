@@ -85,7 +85,8 @@ class MAML(MetaBaseLearner):
 
     def meta_params_iter(self):
         """ Returns an iterator over all of the meta parameters"""
-        return itertools.chain(self.model_params, [self.inner_lr, self.classifier_lr])
+        return itertools.chain(self.model_params, [self.inner_lr, self.classifier_lr], 
+                               self.retained_lm_head.values() if self.retain_lm_head else [])
 
     def get_task_init_kwargs(self, task_init_method, n_labels, **kwargs):
         """ 
@@ -198,12 +199,15 @@ class MAML(MetaBaseLearner):
         query_batch = move_to_device(query_batch, device)
        
         # Setting up LM head for task training
-        init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
-                                                data_batch=support_batch, device=device)
-        lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                method=self.lm_head_init_method,
-                                                init_kwargs=init_kwargs)
-        
+        if self.retain_lm_head:
+            lm_head = self.retained_lm_head
+        else:
+            init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
+                                                    data_batch=support_batch, device=device)
+            lm_head = TaskHead.initialize_task_head(task_type='classification',
+                                                    method=self.lm_head_init_method,
+                                                    init_kwargs=init_kwargs)
+            
         # NOTE: anytime we update the lm head we need to clone the params
         adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
 
