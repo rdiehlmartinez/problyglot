@@ -55,10 +55,15 @@ class Evaluator(object):
         if len(self.max_finetuning_batch_steps_list) == 0:
             self.max_finetuning_batch_steps_list.append(-1)
 
-        self.save_checkpoints = config.getboolean("EVALUATION", "save_checkpoints", fallback=False)
-        # possibly keep track of previous runs of the evaluator for checkpoint purposes
-        if self.save_checkpoints:
+
+        self.save_eval_checkpoints = config.getboolean("EVALUATION", "save_eval_checkpoints",
+                                                       fallback=False)
+        if self.save_eval_checkpoints:
+            # possibly keep track of previous runs of the evaluator for checkpoint purposes
             self.eval_run_tracker = defaultdict(list)
+
+        self.save_latest_checkpoint = config.getboolean("EVALUATION", "save_latest_checkpoint",
+                                                        fallback=True)
 
         self.use_wandb = config.getboolean('EXPERIMENT', 'use_wandb', fallback=True)
         
@@ -97,7 +102,7 @@ class Evaluator(object):
         logger.info("-"*30)
         logger.info("Running evaluator")
 
-        save_current_checkpoint = False
+        mark_best_ckpt = False
 
         for idx, task in enumerate(self.tasks):
             logger.info("*"*20)
@@ -216,9 +221,9 @@ class Evaluator(object):
                 logger.info(f"\t (Task {idx}) Fintune steps: {num_steps} - " +\
                             f"Avg. Loss: {task_loss_mean:.4f}")
 
-                # If we are saving checkpoints, then do some book-keeping to keep track of best 
-                # model
-                if self.save_checkpoints:
+                # If we are saving eval checkpoints, then do some book-keeping to keep track of
+                # the best model
+                if self.save_eval_checkpoints:
                     self.eval_run_tracker[f'{task}.{num_steps}.{metric_name}'].\
                         append(task_metric_mean)
 
@@ -226,24 +231,33 @@ class Evaluator(object):
 
                     if best_function(self.eval_run_tracker[f'{task}.{num_steps}.{metric_name}']) \
                             == task_metric_mean:
-                        save_current_checkpoint = True
+                        mark_best_ckpt = True
 
 
         ### If specified, possibly saving out checkpoint 
         logger.info("*"*20)
         logger.info("Finished evaluator")
-        if save_current_checkpoint:
+        
+
+        if self.save_latest_checkpoint or self.save_eval_checkpoints:
             if not self.use_wandb:
                 logger.error("Cannot save model checkpoint because use_wandb set to False")
             else:
-                logger.info(f"Saving model checkpoint at task batch number: {num_task_batches}")
                 checkpoint = {
                     'learner_state_dict': learner.state_dict(),
                     'optimizer_state_dict': learner.optimizer.state_dict(),
                 }
-                torch.save(checkpoint, os.path.join(wandb.run.dir,
-                                                    f"checkpoint-{num_task_batches}.pt"))
-                wandb.save(f"checkpoint-{num_task_batches}.pt")
+
+                torch.save(checkpoint, os.path.join(wandb.run.dir, "latest-checkpoint.pt"))
+                wandb.save("latest-checkpoint.pt")
+
+                if mark_best_ckpt:
+                    logger.info(f"Saving new best model checkpoint at step: {num_task_batches}")
+                    torch.save(checkpoint, os.path.join(wandb.run.dir,\
+                                            f"checkpoint-{num_task_batches}.pt"))
+                    wandb.save(f"checkpoint-{num_task_batches}.pt")
+
+
         logger.info("-"*30)
         logger.info("")
 
