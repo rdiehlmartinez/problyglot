@@ -42,11 +42,18 @@ class Evaluator(object):
 
         self.batch_size = config.getint("EVALUATION", "batch_size", fallback=32)
 
-        # maximum number of bathes to finetune model on 
-        self.max_finetuning_batch_steps = config.getint("EVALUATION", "max_finetuning_batch_steps",
-                                                        fallback=-1)
-        assert(self.max_finetuning_batch_steps != 0),\
-            "max_finetuning_batch_steps must either be -1 or >1"
+        # maximum number of batch steps to finetune model on - users can pass in a list of 
+        # comma-separated values or a single value. If not passed in finetunes on all avail data.
+        max_finetuning_batch_steps_str = config.get("EVALUATION", "max_finetuning_batch_steps", 
+                                                    fallback="")
+
+        self.max_finetuning_batch_steps_list = []
+        for num_steps in max_finetuning_batch_steps_str.split(','):
+            processed_num_steps = int(num_steps)
+            self.max_finetuning_batch_steps_list.append(processed_num_steps)
+        
+        if len(self.max_finetuning_batch_steps_list) == 0:
+            self.max_finetuning_batch_steps_list.append(-1)
 
         self.save_checkpoints = config.getboolean("EVALUATION", "save_checkpoints", fallback=False)
         # possibly keep track of previous runs of the evaluator for checkpoint purposes
@@ -108,100 +115,118 @@ class Evaluator(object):
                 logger.exception(f"Invalid task type: {task_params['task_type']} for task: {task}")
                 raise Exception(f"Invalid task type: {task_params['task_type']} for task: {task}")
 
-            task_metrics = []
-            task_losses = []
+            task_metrics = defaultdict(list)
+            task_losses = defaultdict(list)
 
-            for subtask_idx, (finetune_dataset, evaluation_dataset) in enumerate(dataset_generator):
-                finetune_lng = finetune_dataset.language
-                evaluation_lng = evaluation_dataset.language
-                logger.info(f"\t Finetuning on: {finetune_lng} - evaluating on: {evaluation_lng}")
 
-                finetune_dataloader = NLUDataLoader(finetune_dataset,
-                                                    batch_size=self.batch_size)
-                evaluation_dataloader = NLUDataLoader(evaluation_dataset,
-                                                      batch_size=self.batch_size)
+            for num_steps in self.max_finetuning_batch_steps_list:
 
-                ### Running Finetuning
-                # Calling on run_finetuning returns a set of finetuned-parameters
-                finetune_adaptation_batch = None
-                task_head_init_method = dataset_generator.task_head_init_method
+                for subtask_idx, (finetune_dataset, evaluation_dataset) in enumerate(dataset_generator):
+                    finetune_lng = finetune_dataset.language
+                    evaluation_lng = evaluation_dataset.language
+                    logger.info(f"\t Finetuning on: {finetune_lng} - evaluating on: {evaluation_lng}")
 
-                if dataset_generator.use_few_shot_adaptation or subtask_idx == 0:
-                    if self.learner_method == "platipus":
-                        finetune_adaptation_batch = finetune_dataset.get_adaptation_batch()
-                    inference_params = learner.run_finetuning(
-                                        finetune_dataloader=finetune_dataloader,
-                                        adaptation_batch=finetune_adaptation_batch,
-                                        task_head_init_method=task_head_init_method,
-                                        max_finetuning_batch_steps=self.max_finetuning_batch_steps,
-                                        **task_params)
+                    finetune_dataloader = NLUDataLoader(finetune_dataset,
+                                                        batch_size=self.batch_size)
+                    evaluation_dataloader = NLUDataLoader(evaluation_dataset,
+                                                        batch_size=self.batch_size)
 
-                ### Running Inference 
-                eval_adaptation_batch = None
-                if dataset_generator.adapt_on_eval:
-                    if self.learner_method != "platipus":
-                        logger.warning("(ignoring adapt_on_eval) - learner is not 'platipus'")
-                    else:    
-                        eval_adaptation_batch = evaluation_dataset.get_adaptation_batch()
-        
-                predictions, eval_loss = learner.run_inference(
+                    ### Running Finetuning
+                    # Calling on run_finetuning returns a set of finetuned-parameters
+                    finetune_adaptation_batch = None
+                    task_head_init_method = dataset_generator.task_head_init_method
+
+                    if dataset_generator.use_few_shot_adaptation or subtask_idx == 0:
+                        if self.learner_method == "platipus":
+                            finetune_adaptation_batch = finetune_dataset.get_adaptation_batch()
+                        inference_params = learner.run_finetuning(
+                                            finetune_dataloader=finetune_dataloader,
+                                            adaptation_batch=finetune_adaptation_batch,
+                                            task_head_init_method=task_head_init_method,
+                                            max_finetuning_batch_steps=num_steps,
+                                            **task_params)
+
+                    ### Running Inference 
+                    eval_adaptation_batch = None
+                    if dataset_generator.adapt_on_eval:
+                        if self.learner_method != "platipus":
+                            logger.warning("(ignoring adapt_on_eval) - learner is not 'platipus'")
+                        else:    
+                            eval_adaptation_batch = evaluation_dataset.get_adaptation_batch()
+            
+                    predictions, eval_loss = learner.run_inference(
                                                         inference_dataloader=evaluation_dataloader,
                                                         adaptation_batch=eval_adaptation_batch,
                                                         **inference_params,
                                                         **task_params)
 
-                ### Logging out metrics
-                if self.use_wandb:
-                    wandb.define_metric(f"{task}.{evaluation_lng}.{metric_name}",
-                                        step_metric="num_task_batches", summary=metric_summary)
-                    wandb.define_metric(f"{task}.{evaluation_lng}.loss",
-                                        step_metric="num_task_batches", summary='min')
+                    ### Logging out metrics
+                    if self.use_wandb:
+                        wandb.define_metric(f"{task}.{evaluation_lng}.{num_steps}.{metric_name}",
+                                            step_metric="num_task_batches", summary=metric_summary)
+                        wandb.define_metric(f"{task}.{evaluation_lng}.{num_steps}.loss",
+                                            step_metric="num_task_batches", summary='min')
 
-                # compute metrics using predictions 
-                metric = compute_metric(predictions, evaluation_dataloader)
-                logger.info(f"\t \t {metric_name}: {metric:.4f} - Eval Loss: {eval_loss:.4f}")
-                if self.use_wandb:
-                    wandb.log({task: {
-                                    evaluation_lng: {
-                                        "loss": eval_loss,
-                                        metric_name: metric,
+                    # compute metrics using predictions 
+                    metric = compute_metric(predictions, evaluation_dataloader)
+                    logger.info(f"\t \t Finetune steps: {num_steps} - " +\
+                                f"{metric_name}: {metric:.4f} - Eval Loss: {eval_loss:.4f}")
+                    if self.use_wandb:
+                        wandb.log({task: {
+                                        evaluation_lng: {
+                                            num_steps: {
+                                                "loss": eval_loss,
+                                                metric_name: metric,
+                                            },
+                                        },
                                     },
-                                },
+                                "num_task_batches": num_task_batches
+                                })
+            
+                    task_metrics[num_steps].append(metric)
+                    task_losses[num_steps].append(eval_loss)
+                
+            
+            for num_steps in self.max_finetuning_batch_steps_list: 
+                # for each max finetune steps setting compute the average metrics and loss
+                task_metric = task_metrics[num_steps]
+                task_loss = task_losses[num_steps]
+
+                task_metric_mean = sum(task_metric)/len(task_metric)
+                task_loss_mean = sum(task_loss)/len(task_loss)
+
+                if self.use_wandb:
+                    wandb.define_metric(f"{task}.{num_steps}.{metric_name}",
+                                        step_metric="num_task_batches",
+                                        summary=metric_summary)
+                    wandb.define_metric(f"{task}.{num_steps}.loss", step_metric="num_task_batches",
+                                        summary='min')
+
+                    wandb.log({task: {
+                                num_steps:{
+                                    "loss": task_loss_mean,
+                                    metric_name: task_metric_mean,      
+                                }
+                            },
                             "num_task_batches": num_task_batches
                             })
-            
-                task_metrics.append(metric)
-                task_losses.append(eval_loss)
-                
-            task_metrics_mean = sum(task_metrics)/len(task_metrics)
-            task_loss_mean = sum(task_losses)/len(task_losses)
 
-            if self.use_wandb:
-                wandb.define_metric(f"{task}.{metric_name}", step_metric="num_task_batches",
-                                    summary=metric_summary)
-                wandb.define_metric(f"{task}.loss", step_metric="num_task_batches",
-                                    summary='min')
+                logger.info(f"\t (Task {idx}) Fintune steps: {num_steps} - " +\
+                            f"Avg. {metric_name}: {task_metric_mean:.4f}")
+                logger.info(f"\t (Task {idx}) Fintune steps: {num_steps} - " +\
+                            f"Avg. Loss: {task_loss_mean:.4f}")
 
-                wandb.log({task: {
-                            "loss": task_loss_mean,
-                            metric_name: task_metrics_mean,
-                        },
-                        "num_task_batches": num_task_batches
-                        })
+                # If we are saving checkpoints, then do some book-keeping to keep track of best 
+                # model
+                if self.save_checkpoints:
+                    self.eval_run_tracker[f'{task}.{num_steps}.{metric_name}'].\
+                        append(task_metric_mean)
 
-            logger.info(f"\t (Task {idx}) Avg. {metric_name}: {task_metrics_mean:.4f}")
-            logger.info(f"\t (Task {idx}) Avg Loss: {task_loss_mean:.4f}")
+                    best_function = max if metric_summary == 'max' else min
 
-            # If we are saving checkpoints, then do some book-keeping to keep track of best 
-            # model
-            if self.save_checkpoints:
-                self.eval_run_tracker[f'{task}.{metric_name}'].append(task_metrics_mean)
-
-                best_function = max if metric_summary == 'max' else min
-
-                if best_function(self.eval_run_tracker[f'{task}.{metric_name}']) \
-                        == task_metrics_mean:
-                    save_current_checkpoint = True
+                    if best_function(self.eval_run_tracker[f'{task}.{num_steps}.{metric_name}']) \
+                            == task_metric_mean:
+                        save_current_checkpoint = True
 
 
         ### If specified, possibly saving out checkpoint 

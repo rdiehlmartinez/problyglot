@@ -43,7 +43,7 @@ class XNLIDatasetGenerator(NLUDatasetGenerator):
         # if use_few_shot_adaptation is False then we do zero-shot adaptation
         # typically from english -> other language
         self.use_few_shot_adaptation = config.getboolean("XNLI", "use_few_shot_adaptation",
-                                                         fallback=False)
+                                                         fallback=True)
 
         if self.use_few_shot_adaptation:
             self.translated_root_path = os.path.join(self.root_path, "translate-train")
@@ -53,7 +53,7 @@ class XNLIDatasetGenerator(NLUDatasetGenerator):
         # NOTE: If adapt_on_eval is True, then - assuming we are using platipus - we take 
         # an adaptation step on the final evaluation dataset. If we are not using platipus, 
         # we just ignore this flag
-        self.adapt_on_eval = config.getboolean("XNLI", "adapt_on_eval", fallback=True)
+        self.adapt_on_eval = config.getboolean("XNLI", "adapt_on_eval", fallback=False)
 
         # how to initialize the XNLI (aka. classification) task head
         self.task_head_init_method = config.get("XNLI", "task_head_init_method", fallback="random")
