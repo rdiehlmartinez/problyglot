@@ -1,12 +1,3 @@
-# Problyglot : A framework for Proabilistic Graphical Language Training
+# EXAMPLE DEMONSTRATING HOW TO CONTINUOUSLY CALL ON CSD3 TO RUN NEVER ENDING JOBS
 
-Feature Requests (marked with priority): 
-* Implement protoMAML (better initialization of the final classification layer) [2]
-* Task embedding implementations [2]
-* Implement other meta-learners (MAML) and the non-meta-learning baseline [3]
-
-Evaluation TODOs: 
-* Evaluation of model on downstream tasks [1] 
-    * create new specific dataset class for processing task specific dataset 
-
-* print out eval predictions and submit to xtreme
+Checkout the main file boop.py; we launch csd3 by calling ```sbatch slurm_submit.peta4``` which in turn calls boop.py until it has counted up to 500.
