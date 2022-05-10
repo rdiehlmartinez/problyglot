@@ -8,7 +8,6 @@ import higher
 import itertools
 import logging
 
-from collections import OrderedDict
 from multiprocessing.queues import Empty as EmptyQueue
 
 import torch
