@@ -15,12 +15,14 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from ..taskheads import TaskHead, ClassificationHead
 
+from ..utils import set_seed
+
 logger = logging.getLogger(__name__)
 
 class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
-    def __init__(self, base_model, base_device, lm_head_init_method='protomaml', lm_head_n=100,
-                 retain_lm_head=False, **kwargs):
+    def __init__(self, base_model, base_device, seed, lm_head_init_method='protomaml',
+                 lm_head_n=100, retain_lm_head=False, **kwargs):
         """
         BaseLearner establishes the inferface for the learner class and 
         inherents from torch.nn.Module. 
@@ -28,6 +30,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         Args: 
             * base_model (implements a BaseModel)
             * base_device (str): what device to use for training (either 'cpu' or 'gpu) 
+            * seed (int): Seed for reproducibility 
             * language_head_init_method (str): How to initialize the language head classifier layer
             * lm_head_n (int): Size of n-way classification used for generating the language 
                 modeling tasks used for training.
@@ -37,6 +40,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
         """
         super().__init__()
+        self.seed = seed
 
         # hidden dimensions of the outputs of the base_model
         self.base_model = base_model
@@ -179,6 +183,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '32432'
         dist.init_process_group("nccl", rank=rank, world_size=world_size)
+        set_seed(self.seed)
 
         self.to(device)
 

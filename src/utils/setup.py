@@ -52,22 +52,45 @@ def setup_logger(config_file_path):
     )
     logging.info(f"Initializing experiment: {experiment_directory}")
 
-def setup_wandb(config):
+def setup_wandb(config, resume_run_id=None):
     """
     Sets up logging and model experimentation using weights & biases 
     """
     if config.getboolean('EXPERIMENT', 'use_wandb', fallback=True):
         dict_config = json.loads(json.dumps(config._sections))
         wandb.init(project=config.get("EXPERIMENT", "name"),
-                entity="problyglot",
-                config=dict_config)
+                   entity="problyglot",
+                   config=dict_config,
+                   id=resume_run_id,
+                   resume="must" if resume_run_id is not None else None
+                   )
+        if resume_run_id:
+            logging.info(f"Resuming run with id: {resume_run_id}")
+        else: 
+            logging.info(f"Starting run with id: {wandb.run.id}")
+            exit()
 
-def setup(config_file_path):
+def setup(config_file_path, resume_run_id=None, resume_num_task_batches=None):
     """
     Reads in config file, sets up logger and sets a seed to ensure reproducibility.
+
+    NOTE: The optional keyword arguments (resume_run_id and resume_num_task_batches) should never
+    be manually set, rather they are passed in automatically by the program if it encounters a 
+    time expiration error and thus spawns a new job to continue running the program.
     """
     config = setup_config(config_file_path)
     setup_logger(config_file_path)
-    setup_wandb(config)
-    set_seed(config.getint("EXPERIMENT", "seed", fallback=-1))
+    setup_wandb(config, resume_run_id=resume_run_id)
+
+    seed=config.getint("EXPERIMENT", "seed", fallback=-1)
+
+    if resume_run_id is not None:
+        # shifting over the random seed by resume_num_task_batches steps in order for the meta
+        # dataset to not yield the same sentences as already seen by the model 
+        # also added benefit that if the same job is run again we are likely to achieve the same  
+        # result
+        seed += resume_num_task_batches
+    
+    config["EXPERIMENT"]["seed"] = str(seed)
+    set_seed(seed)
     return config
