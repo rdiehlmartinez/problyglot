@@ -45,6 +45,7 @@ class Problyglot(object):
 
         # Setting device 
         self.base_device = config.get("PROBLYGLOT", "device", fallback=DEFAULT_DEVICE)
+        self.use_multiple_gpus = self.base_device == torch.device("cuda") and num_gpus > 1
         logger.info(f"Running problyglot on device: {self.base_device}")
 
         # setting base model 
@@ -134,6 +135,47 @@ class Problyglot(object):
 
         return learner
 
+
+    def shutdown_processes(self):
+        """Helper function for shutting down any spawned processes """
+
+        self.meta_dataset.shutdown()
+
+        # Shut down workers if using multiple GPUs
+        if hasattr(self, "gpu_workers") and self.use_multiple_gpus: 
+            logger.info("Shutting down GPU workers used for model training")
+            for p in self.gpu_workers:
+                p.terminate()
+                time.sleep(1)
+                p.join()
+
+    def timeout_handler(self, signum, frame):
+        """
+        Gracefully handles early termination signals. Catches termination signals sent from  
+        slurm just before the program is about to terminate and saved out a model checkpoint, as
+        well as shutting down any spawned workers.
+        """
+
+        logger.info("Timeout (SIGINT) termination signal received")
+        logger.info("Attempting to save final checkpoint of model")
+
+        if self.config.getboolean('PROBLYGLOT', 'save_latest_checkpoint', fallback=True):
+            if not self.use_wandb:
+                logger.error("Cannot save model checkpoint because use_wandb set to False")
+            else:
+                logger.info(f"Saving trained model")
+                checkpoint = {
+                    'learner_state_dict': self.learner.state_dict(),
+                    'optimizer_state_dict': self.learner.optimizer.state_dict(),
+                }
+                torch.save(checkpoint, os.path.join(wandb.run.dir, f"latest-checkpoint.pt"))
+        else:
+            logger.error("Failed to save checkpoint - save_latest_checkpoint set to False")
+
+        self.shutdown_processes()
+
+        exit(1)
+
     def __call__(self) -> None: 
         """ 
         Train or evaluate the self.base_model via the self.learner training procedure 
@@ -168,7 +210,7 @@ class Problyglot(object):
         ### If using n GPUs we launch n processes that run the run_inner_loop_mp function 
 
         # If using multiple GPUs
-        if num_gpus > 1:
+        if self.use_multiple_gpus:
             
             if num_tasks_per_iteration % num_gpus != 0:
                 error_msg = "Num tasks per iteration has to be dividable by num_pus!"
@@ -183,7 +225,7 @@ class Problyglot(object):
 
             step_optimizer = spawn_context.Event()
 
-            gpu_workers = []
+            self.gpu_workers = []
             for rank in range(num_gpus):
                 p = spawn_context.Process(target=self.learner.run_inner_loop_mp,
                                           args=(rank, num_gpus, data_queue, loss_queue,
@@ -191,7 +233,7 @@ class Problyglot(object):
                                                )
                                           )
                 p.start()
-                gpu_workers.append(p)
+                self.gpu_workers.append(p)
 
 
         ### Setting up tracking variables and w&b metrics  
@@ -236,7 +278,7 @@ class Problyglot(object):
         logger.info("Starting model training")
         for batch_idx, batch in enumerate(self.meta_dataloader):
             logger.debug(f"\t (Task idx {batch_idx}) Language: {batch[0]}")
-            if num_gpus > 1:
+            if self.use_multiple_gpus:
                 ## Filling up data queue for workers to process
                 data_queue.put([batch], False)
             else:
@@ -264,7 +306,7 @@ class Problyglot(object):
             if ((batch_idx + 1) % num_tasks_per_iteration == 0):
                 #### NOTE: Just finished a batch of tasks 
 
-                if num_gpus > 1: 
+                if self.use_multiple_gpus: 
                     while True:
                         # Waiting for all processes to finish computing gradients
                         time.sleep(1)
@@ -288,7 +330,7 @@ class Problyglot(object):
                                                 
                 ##### NOTE: Taking a global (meta) update step
                 num_task_batches += 1
-                if num_gpus > 1: 
+                if self.use_multiple_gpus: 
                     # informing/waiting for workers to all take an optimizer step 
                     step_optimizer.set()
                     while step_optimizer.is_set():
@@ -349,12 +391,6 @@ class Problyglot(object):
                     'optimizer_state_dict': self.learner.optimizer.state_dict(),
                 }
                 torch.save(checkpoint, os.path.join(wandb.run.dir, f"final.pt"))
+        
+        self.shutdown_processes()
 
-        self.meta_dataset.shutdown()
-
-        # Shut down workers if using multiple GPUs
-        if num_gpus > 1: 
-            logger.info("Shutting down GPU workers used for model training")
-            for p in gpu_workers:
-                p.terminate()
-                p.join()
