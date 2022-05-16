@@ -68,7 +68,6 @@ def setup_wandb(config, resume_run_id=None):
             logging.info(f"Resuming run with id: {resume_run_id}")
         else: 
             logging.info(f"Starting run with id: {wandb.run.id}")
-            exit()
 
 def setup(config_file_path, resume_run_id=None, resume_num_task_batches=None):
     """

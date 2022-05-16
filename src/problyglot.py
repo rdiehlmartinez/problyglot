@@ -7,7 +7,6 @@ import logging
 import wandb
 import time 
 import os 
-import subprocess
 
 import torch.multiprocessing as mp
 
@@ -196,17 +195,13 @@ class Problyglot(object):
                 # forcing move to save out latest checkpoint before spawning new job
                 wandb.save('latest-checkpoint.pt', policy="now")
 
-                # spawning new job 
-                subprocess.run(["sbatch", "run_model.wilkes3", self.resume_run_config_path,
-                                "--resume_run_id", str(wandb.run.id), "--resume_num_task_batches",
-                                str(max(self.num_task_batches-1, 0))], cwd='scripts')
-
         else:
             logger.error("Failed to save checkpoint - save_latest_checkpoint set to False")
 
         self.shutdown_processes()
 
-        exit(1)
+        # exit code 124 triggers re-run
+        exit(124)
 
     def __call__(self) -> None: 
         """ 
