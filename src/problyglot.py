@@ -24,18 +24,13 @@ class Problyglot(object):
     type of (meta-)learner.
     """
 
-    def __init__(self, config, resume_run_config_path=None, resume_run_id=None,
-                 resume_num_task_batches=None) -> None:
+    def __init__(self, config, resume_num_task_batches=0):
         """ Initialize base model and meta learning method based on a config 
         
-        NOTE: The optional keyword arguments (resume_run_config_path, resume_run_id, 
-        resume_num_task_batches) should ever be manually set, rather they are passed in
-        automatically by the program if it encounters a time expiration error and thus spawns a
-        new job to continue running the program.
+        NOTE: The optional keyword argument (resume_num_task_batches) should ever be manually set,
+        rather it is passed in automatically by the program if it encounters a time expiration
+        error and thus spawns a new job to continue running the program.
         """
-
-        # keeps track of the config path in case the program exits and we need to start over
-        self.resume_run_config_path = resume_run_config_path
 
         # config params need to be accessed by several methods
         self.config = config
@@ -62,11 +57,13 @@ class Problyglot(object):
         self.base_model_name = config.get("BASE_MODEL", "name")
         self.base_model = self.load_model(self.base_model_name)
 
+        # setting num_task_batches before learner, to inform learner if we are resuming training 
+        # or starting fresh 
+        self.num_task_batches = resume_num_task_batches if resume_num_task_batches else 0
+
         # setting learner 
         self.learner_method = self.config.get("LEARNER", "method")
-        self.learner = self.load_learner(self.learner_method, resume_run_id)
-
-        self.num_task_batches = resume_num_task_batches if resume_num_task_batches else 0
+        self.learner = self.load_learner(self.learner_method)
 
         if self.use_wandb:
             # setting up metrics for logging to wandb
@@ -100,7 +97,7 @@ class Problyglot(object):
 
         return model
 
-    def load_learner(self, learner_method, resume_run_id=None):
+    def load_learner(self, learner_method):
         """ Helper function for reading in (meta) learning procedure """
 
         logger.info(f"Using learner: {learner_method}")
@@ -133,9 +130,8 @@ class Problyglot(object):
                                                **learner_kwargs)
 
         # NOTE: possibly load in learner checkpoint
-        # if resume_run_id we start from the latest checkpoint instead of whatever checkpoint 
-        # might have been specified in the config
-        if resume_run_id is not None:
+        # if num_task_batches is 0 at the start of training, then we are resuming training 
+        if self.num_task_batches > 0:
             checkpoint_file = "latest-checkpoint.pt"
             checkpoint_run = None
         else:
@@ -191,10 +187,15 @@ class Problyglot(object):
                     'learner_state_dict': self.learner.state_dict(),
                     'optimizer_state_dict': self.learner.optimizer.state_dict(),
                 }
-                torch.save(checkpoint, os.path.join(wandb.run.dir, "latest-checkpoint.pt"))
                 # forcing move to save out latest checkpoint before spawning new job
+                torch.save(checkpoint, os.path.join(wandb.run.dir, "latest-checkpoint.pt"))
                 wandb.save('latest-checkpoint.pt', policy="now")
 
+                # writing out the current task batch number to the run_file 
+                if not os.path.exists('tmp'):
+                    os.mkdir('tmp')
+                with open(f"tmp/{wandb.run.id}.runfile", "w+") as f:
+                    f.write(str(max(self.num_task_batches-1, 0)))
         else:
             logger.error("Failed to save checkpoint - save_latest_checkpoint set to False")
 

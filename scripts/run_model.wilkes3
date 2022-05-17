@@ -20,9 +20,9 @@
 #SBATCH --ntasks=1
 #! Specify the number of GPUs per node (between 1 and 4; must be 4 if nodes>1).
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:4
 #! How much wallclock time will be required?
-#SBATCH --time=10:10:00
+#SBATCH --time=11:10:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=NONE
 #! Uncomment this to prevent the job from being requeued (e.g. if
@@ -53,11 +53,14 @@ module load rhel8/default-amp              # REQUIRED - loads the basic environm
 
 #! Insert additional module load commands after this line if needed:
 
+#! specifies the unique identifier of the job id
+JOBID=$SLURM_JOB_ID
+
 #! Full path to application executable: 
 application="run_model.sh"
 
 #! Run options for the application:
-options="$@"
+options="$@ --run_id $JOBID"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory
@@ -77,15 +80,12 @@ CMD="$application $options"
 #! Choose this for a MPI code using OpenMPI:
 #CMD="mpirun -npernode $mpi_tasks_per_node -np $np $application $options"
 
-
 ###############################################################
 ### You should not have to change anything below this line ####
 ###############################################################
 
 cd $workdir
 echo -e "Changed directory to `pwd`.\n"
-
-JOBID=$SLURM_JOB_ID
 
 echo -e "JobID: $JOBID\n======"
 echo "Time: `date`"
@@ -105,7 +105,8 @@ echo -e "\nnumtasks=$numtasks, numnodes=$numnodes, mpi_tasks_per_node=$mpi_tasks
 echo -e "\nExecuting command:\n==================\n$CMD\n"
 
 # after 23 hours sends SIGINT 5 minutes later send SIGKILL
-timeout -s SIGINT --kill-after=5m 10h $CMD
+timeout -s SIGINT --kill-after=5m 11h $CMD
 if [[ $? -eq 124 ]]; then
+  cd scripts
   sbatch run_model.wilkes3
 fi

@@ -52,7 +52,7 @@ def setup_logger(config_file_path):
     )
     logging.info(f"Initializing experiment: {experiment_directory}")
 
-def setup_wandb(config, resume_run_id=None):
+def setup_wandb(config, run_id, resume_training):
     """
     Sets up logging and model experimentation using weights & biases 
     """
@@ -61,16 +61,16 @@ def setup_wandb(config, resume_run_id=None):
         wandb.init(project=config.get("EXPERIMENT", "name"),
                    entity="problyglot",
                    config=dict_config,
-                   id=resume_run_id,
-                   resume="must" if resume_run_id is not None else None
+                   id=run_id,
+                   resume="must" if resume_training else None
                    )
-        if resume_run_id:
-            logging.info(f"Resuming run with id: {resume_run_id}")
+        if resume_training:
+            logging.info(f"Resuming run with id: {run_id}")
         else: 
-            logging.info(f"Starting run with id: {wandb.run.id}")
+            logging.info(f"Starting run with id: {run_id}")
 
-def setup(config_file_path, resume_run_id=None, resume_num_task_batches=None):
-    """
+def setup(config_file_path, run_id, resume_num_task_batches):
+    """s
     Reads in config file, sets up logger and sets a seed to ensure reproducibility.
 
     NOTE: The optional keyword arguments (resume_run_id and resume_num_task_batches) should never
@@ -78,17 +78,20 @@ def setup(config_file_path, resume_run_id=None, resume_num_task_batches=None):
     time expiration error and thus spawns a new job to continue running the program.
     """
     config = setup_config(config_file_path)
+
+    # we are resuming training if resume_num_task_batches is greater than 0
+    resume_training = resume_num_task_batches > 0 
+
     setup_logger(config_file_path)
-    setup_wandb(config, resume_run_id=resume_run_id)
+    setup_wandb(config, run_id, resume_training)
 
     seed=config.getint("EXPERIMENT", "seed", fallback=-1)
 
-    if resume_run_id is not None:
-        # shifting over the random seed by resume_num_task_batches steps in order for the meta
-        # dataset to not yield the same sentences as already seen by the model 
-        # also added benefit that if the same job is run again we are likely to achieve the same  
-        # result
-        seed += resume_num_task_batches
+    # shifting over the random seed by resume_num_task_batches steps in order for the meta
+    # dataset to not yield the same sentences as already seen by the model 
+    # also added benefit that if the same job is run again we are likely to achieve the same  
+    # result
+    seed += resume_num_task_batches
     
     config["EXPERIMENT"]["seed"] = str(seed)
     set_seed(seed)
