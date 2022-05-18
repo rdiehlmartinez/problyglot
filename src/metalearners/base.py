@@ -2,10 +2,11 @@ __author__ = 'Richard Diehl Martinez'
 """ Interface class for (meta) learners """
 
 import abc 
-import higher 
+import higher
+import logging
 import math
 import os
-import logging
+import re 
 
 from collections import OrderedDict
 
@@ -272,14 +273,50 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
 
 class MetaBaseLearner(BaseLearner):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, base_model, inner_lr, classifier_lr, *args, **kwargs):
         """ 
         Inherents from BaseLearner and establishes the base class for all meta-learners 
         (e.g. maml and platipus). Provides useful functionality for meta-learners which
         rely on the torch higher library to maintain a functionalized version of the model 
         with corresponding parameters that are clones and fed into the functionalized model.
+
+        One important NOTE - the base_model we are meta learning needs to contain parameter names 
+        that specify what layer the parameter is in (e.g. 'attention.layer.1'). This is because 
+        we store per-layer parameter weights.
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(base_model, *args, **kwargs)
+
+        self.param_idx_to_layer = {}
+        for idx, (name, _) in enumerate(base_model.named_parameters()): 
+            layer = re.findall(r"layer.\d*", name)
+
+            if len(layer) > 0:
+                # layer will return a list of strings of the form: ["layer.[number]"]
+                self.param_idx_to_layer[idx] = int(layer[0][6:])
+            else: 
+                self.param_idx_to_layer[idx] = None
+
+        layers = set(self.param_idx_to_layer.values())            
+
+        # We store a list of learning rates for each layer of the model that are meta-learned 
+        # and we initialize each of these to inner_lr
+        self.inner_layers_lr = torch.nn.ParameterList([
+                                        torch.nn.Parameter(
+                                            torch.tensor(float(inner_lr)).to(self.base_device)
+                                        )
+                                        for layer in layers if layer is not None
+                                    ])
+        self.classifier_lr = torch.nn.Parameter(torch.tensor(float(classifier_lr)).\
+                                                    to(self.base_device))
+
+        if len(self.inner_layers_lr) == 0:
+            # Something is probably wrong - we are not storing any learning rates for any of the 
+            # layers. Might be desired behavior by the user but probably a bug.
+            logger.error(
+            """
+            Could not specify per-layer learning rates. Ensure that the model parameters that are 
+            in the same layer contain the string 'layer.[number]' as part of their name.
+            """)
 
     ### Base setup functionality for meta learning models
 
@@ -287,7 +324,7 @@ class MetaBaseLearner(BaseLearner):
         """ Helper function for converting base_model into a functionalized form"""
         self.functional_model = higher.patch.make_functional(module=self.base_model)
 
-        # NOTE: these two lines are SUPER important (otherwise computation graph explodes)
+        # NOTE: these two lines are SUPER important (otherwise computation graph explodes)w
         self.functional_model.track_higher_grads = False
         self.functional_model._fast_params = [[]]
 
@@ -340,7 +377,9 @@ class MetaBaseLearner(BaseLearner):
             * params (iterable): Iterable of torch.nn.Paramater()s
                 (the params that we want to evaluate our model at)
             * lm_head_weights (dict): Weights of the lm classification head
-            * learning_rate (float): The internal learning rate used to update params
+            * learning_rate (torch.nn.Parameter or torch.nn.ParameterList): The learning rate 
+                used to update the model parameters. Will be a ParameterList if we are storing
+                per-layer specific learning rates. 
             * num_inner_steps (int): Number of inner steps to use for the adaptation process
             * optimize_classifier (bool): Whether to train the final classification layer as 
                 part of the adaptation process 
@@ -387,9 +426,19 @@ class MetaBaseLearner(BaseLearner):
 
             # updating params
             grad_counter = 0
-            for i, p in enumerate(adapted_params):
+            for idx, p in enumerate(adapted_params):
+                
+                if isinstance(learning_rate, torch.nn.ParameterList):
+                    param_lr = self.param_idx_to_layer[idx]
+                else: 
+                    param_lr = learning_rate
+
                 if p.requires_grad:
-                    adapted_params[i] = adapted_params[i] - learning_rate * grads[grad_counter]
+                    if param_lr is None: 
+                        logger.exception(f"Inner learning rate for param at idx: {idx} is None")
+                        raise Exception(f"Inner learning rate for param at idx: {idx} is None")
+
+                    adapted_params[idx] = adapted_params[idx] - param_lr * grads[grad_counter]
                     grad_counter += 1
 
             # optionally use SGD to update the weights of the final linear classification layer

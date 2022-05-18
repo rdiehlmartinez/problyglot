@@ -2,8 +2,20 @@ __author__ = 'Richard Diehl Martinez'
 """ Base ABC class interface for base models """
 
 import abc 
+import torch
 
 class BaseModel(metaclass=abc.ABCMeta):
+
+    """
+    Base interface for model classes. We primarily define these so that if in the future we do not 
+    want to use a torch.nn.Module we can continue to ensure models share a similar interface.
+
+
+    One important NOTE - the base_model should contain parameters that are specified names 
+    according to what layer the parameter is in (e.g. 'attention.layer.1'). This is because 
+    we store per-layer parameter weights that are used for the maml and platipus meta-learning 
+    methods.
+    """
 
     @classmethod
     @abc.abstractmethod
@@ -35,4 +47,14 @@ class BaseModel(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def __str__(self): 
         """ For debugging purposes printing model should return something useful """
+        raise NotImplementedError()
+
+    @abc.abstractmethod 
+    def named_parameters(self): 
+        """ Returns a list of tuple of (name, parameter) (SEE NOTE above re naming convention) """
+        raise NotImplementedError()
+
+    @abc.abstractmethod 
+    def parameters(self): 
+        """ Returns a list of parameters in the model """
         raise NotImplementedError()
