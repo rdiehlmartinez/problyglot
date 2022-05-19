@@ -49,7 +49,7 @@ class MAML(MetaBaseLearner):
                 should be used (defaults to False)
         """
 
-        super().__init__(base_model, *args, **kwargs)
+        super().__init__(base_model, inner_lr, classifier_lr, *args, **kwargs)
 
         # Initializing params of the functional model that will be meta-learned
         self.model_params = torch.nn.ParameterList()
@@ -58,11 +58,7 @@ class MAML(MetaBaseLearner):
                                                         requires_grad=param.requires_grad)
                                 )
 
-
-        self.inner_lr = torch.nn.Parameter(data=torch.tensor(float(inner_lr)).to(self.base_device))
-        self.classifier_lr = torch.nn.Parameter(data=torch.tensor(float(classifier_lr))\
-                                .to(self.base_device))
-
+        # NOTE: the learning rates for the inner-loop adaptation are defined in MetaBaseLearner
 
         # loading in meta optimizer 
         self.meta_lr = float(meta_lr)
@@ -84,7 +80,7 @@ class MAML(MetaBaseLearner):
 
     def meta_params_iter(self):
         """ Returns an iterator over all of the meta parameters"""
-        return itertools.chain(self.model_params, [self.inner_lr, self.classifier_lr], 
+        return itertools.chain(self.model_params, self.inner_layers_lr, [self.classifier_lr], 
                                self.retained_lm_head.values() if self.retain_lm_head else [])
 
     def get_task_init_kwargs(self, task_init_method, n_labels, **kwargs):
@@ -214,7 +210,7 @@ class MAML(MetaBaseLearner):
         phi = self._adapt_params(support_batch, 
                                  params=self.model_params, 
                                  lm_head_weights=adapted_lm_head,
-                                 learning_rate=self.inner_lr,
+                                 learning_rate=self.inner_layers_lr,
                                  num_inner_steps=self.num_learning_steps,
                                  clone_params=True,
                                  optimize_classifier=True)

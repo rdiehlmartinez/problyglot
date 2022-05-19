@@ -36,24 +36,10 @@ class XNLIDatasetGenerator(NLUDatasetGenerator):
         """
         # location of folder containing xnli data
         self.root_path = config.get("XNLI", "root_path")
+        self.translated_root_path = os.path.join(self.root_path, "translate-train")
 
         # whether the evaluation is going to be done on dev or on test
         self.evaluation_partition = config.get("EVALUATION", "partition", fallback="dev")
-
-        # if use_few_shot_adaptation is False then we do zero-shot adaptation
-        # typically from english -> other language
-        self.use_few_shot_adaptation = config.getboolean("XNLI", "use_few_shot_adaptation",
-                                                         fallback=True)
-
-        if self.use_few_shot_adaptation:
-            self.translated_root_path = os.path.join(self.root_path, "translate-train")
-            assert(os.path.exists(self.translated_root_path)),\
-                "For few shot adaptation must have a translate-train directory"
-
-        # NOTE: If adapt_on_eval is True, then - assuming we are using platipus - we take 
-        # an adaptation step on the final evaluation dataset. If we are not using platipus, 
-        # we just ignore this flag
-        self.adapt_on_eval = config.getboolean("XNLI", "adapt_on_eval", fallback=False)
 
         # how to initialize the XNLI (aka. classification) task head
         self.task_head_init_method = config.get("XNLI", "task_head_init_method", fallback="random")
@@ -79,8 +65,7 @@ class XNLIDatasetGenerator(NLUDatasetGenerator):
         eng_lng_str = 'en'
         eng_file_path = os.path.join(root_path, 'train-en.tsv')
 
-        if self.use_few_shot_adaptation:
-            translated_file_paths = os.listdir(self.translated_root_path)
+        translated_file_paths = os.listdir(self.translated_root_path)
 
         for file_path in file_paths: 
             file_path_split = file_path.split('-')
@@ -92,7 +77,7 @@ class XNLIDatasetGenerator(NLUDatasetGenerator):
 
             language_file_dict = dict()
 
-            if self.use_few_shot_adaptation and file_path_lng != "en":
+            if file_path_lng != "en":
                 # looking up the translated version of the current evaluation file
                 # except when the eval language is already english 
                 translated_file_path = list(filter(lambda x: file_path_lng in x,
@@ -101,9 +86,6 @@ class XNLIDatasetGenerator(NLUDatasetGenerator):
                                                          translated_file_path)
                 language_file_dict['finetune'] = {"lng": file_path_lng,
                                                   "file_path": translated_full_file_path}
-            else: 
-                # if we are doing zero-shot adaptation, then we always finetune on english data
-                language_file_dict['finetune'] = {"lng": eng_lng_str, "file_path": eng_file_path}
             
             full_file_path = os.path.join(root_path, file_path)
             language_file_dict['evaluation'] = {"lng": file_path_lng, "file_path": full_file_path}
@@ -119,10 +101,9 @@ class XNLIDatasetGenerator(NLUDatasetGenerator):
         """
 
         for language_file_dict in self.language_files:
-            # the finetuning set is translated if few shot learning is set and the current language 
-            # is not english
-            finetune_translated = self.use_few_shot_adaptation\
-                                    and language_file_dict['finetune']['lng'] != "en"
+            # Since we are doing few-shot learning we want to use the translated data (except)
+            # english which did not need to be translated 
+            finetune_translated = language_file_dict['finetune']['lng'] != "en"
 
             finetune_dataset = XNLIDataset(**language_file_dict['finetune'],
                                            language_task_kwargs=self.language_task_kwargs,
@@ -171,7 +152,6 @@ class XNLIDataset(NLUDataset):
             * process_for_adaptation (bool): Whether to process the line for generating a batch
                 of data for model adaptation (only applicable if using platipus). 
             
-        
         Returns: 
             If process_for_adaptation: 
                 * Tuple of lists corresponding to tokenized hypothesis and premise 

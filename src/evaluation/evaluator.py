@@ -55,7 +55,6 @@ class Evaluator(object):
         if len(self.max_finetuning_batch_steps_list) == 0:
             self.max_finetuning_batch_steps_list.append(-1)
 
-
         self.save_eval_checkpoints = config.getboolean("EVALUATION", "save_eval_checkpoints",
                                                        fallback=False)
         if self.save_eval_checkpoints:
@@ -127,9 +126,8 @@ class Evaluator(object):
             for num_steps in self.max_finetuning_batch_steps_list:
 
                 for subtask_idx, (finetune_dataset, evaluation_dataset) in enumerate(dataset_generator):
-                    finetune_lng = finetune_dataset.language
                     evaluation_lng = evaluation_dataset.language
-                    logger.info(f"\t Finetuning on: {finetune_lng} - evaluating on: {evaluation_lng}")
+                    logger.info(f"\t Runing finetuning & evaluation on: {evaluation_lng}")
 
                     finetune_dataloader = NLUDataLoader(finetune_dataset,
                                                         batch_size=self.batch_size)
@@ -141,27 +139,18 @@ class Evaluator(object):
                     finetune_adaptation_batch = None
                     task_head_init_method = dataset_generator.task_head_init_method
 
-                    if dataset_generator.use_few_shot_adaptation or subtask_idx == 0:
-                        if self.learner_method == "platipus":
-                            finetune_adaptation_batch = finetune_dataset.get_adaptation_batch()
-                        inference_params = learner.run_finetuning(
-                                            finetune_dataloader=finetune_dataloader,
-                                            adaptation_batch=finetune_adaptation_batch,
-                                            task_head_init_method=task_head_init_method,
-                                            max_finetuning_batch_steps=num_steps,
-                                            **task_params)
+                    if self.learner_method == "platipus":
+                        finetune_adaptation_batch = finetune_dataset.get_adaptation_batch()
+                    inference_params = learner.run_finetuning(
+                                        finetune_dataloader=finetune_dataloader,
+                                        adaptation_batch=finetune_adaptation_batch,
+                                        task_head_init_method=task_head_init_method,
+                                        max_finetuning_batch_steps=num_steps,
+                                        **task_params)
 
                     ### Running Inference 
-                    eval_adaptation_batch = None
-                    if dataset_generator.adapt_on_eval:
-                        if self.learner_method != "platipus":
-                            logger.warning("(ignoring adapt_on_eval) - learner is not 'platipus'")
-                        else:    
-                            eval_adaptation_batch = evaluation_dataset.get_adaptation_batch()
-            
                     predictions, eval_loss = learner.run_inference(
                                                         inference_dataloader=evaluation_dataloader,
-                                                        adaptation_batch=eval_adaptation_batch,
                                                         **inference_params,
                                                         **task_params)
 
@@ -216,9 +205,9 @@ class Evaluator(object):
                             "num_task_batches": num_task_batches
                             })
 
-                logger.info(f"\t (Task {idx}) Fintune steps: {num_steps} - " +\
+                logger.info(f"\t (Task {idx}) Finetune steps: {num_steps} - " +\
                             f"Avg. {metric_name}: {task_metric_mean:.4f}")
-                logger.info(f"\t (Task {idx}) Fintune steps: {num_steps} - " +\
+                logger.info(f"\t (Task {idx}) Finetune steps: {num_steps} - " +\
                             f"Avg. Loss: {task_loss_mean:.4f}")
 
                 # If we are saving eval checkpoints, then do some book-keeping to keep track of

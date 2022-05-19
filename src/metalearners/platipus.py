@@ -75,7 +75,7 @@ class Platipus(MetaBaseLearner):
                 method used in the platipus paper. 
         """
 
-        super().__init__(base_model, *args, **kwargs)
+        super().__init__(base_model, inner_lr, classifier_lr, *args, **kwargs)
         
         # establishing meta parameters to-be learned
         self.mu_theta = torch.nn.ParameterList()
@@ -96,13 +96,11 @@ class Platipus(MetaBaseLearner):
                                     data=torch.randn(size=param.shape).to(self.base_device) - 4,
                                     requires_grad=param.requires_grad)
                                 )
+            
+        # NOTE: the learning rates for the inner-loop adaptation are defined in MetaBaseLearner
 
         self.gamma_p = torch.nn.Parameter(data=torch.tensor(float(gamma_p)).to(self.base_device))
         self.gamma_q = torch.nn.Parameter(data=torch.tensor(float(gamma_q)).to(self.base_device))
-
-        self.inner_lr = torch.nn.Parameter(data=torch.tensor(float(inner_lr)).to(self.base_device))
-        self.classifier_lr = torch.nn.Parameter(data=torch.tensor(float(classifier_lr))\
-                                .to(self.base_device))
 
         # loading in meta optimizer 
         self.meta_lr = float(meta_lr)
@@ -133,9 +131,11 @@ class Platipus(MetaBaseLearner):
 
     def meta_params_iter(self):
         """ Returns an iterator over all of the meta parameters"""
-        return itertools.chain(self.mu_theta, self.log_sigma_theta, self.log_v_q, 
-                               [self.gamma_p, self.gamma_q, self.inner_lr, self.classifier_lr],
-                               self.retained_lm_head.values() if self.retain_lm_head else [])
+        return itertools.chain(
+                        self.mu_theta, self.log_sigma_theta, self.log_v_q, self.inner_layers_lr,
+                        [self.gamma_p, self.gamma_q, self.classifier_lr],
+                        self.retained_lm_head.values() if self.retain_lm_head else []
+        )
 
     def get_task_init_kwargs(self, task_init_method, n_labels, **kwargs):
         """ 
@@ -333,6 +333,7 @@ class Platipus(MetaBaseLearner):
         
 
 <<<<<<< HEAD
+<<<<<<< HEAD
         # adapting theta to the support set -> adapted params are phi
         phi = self._adapt_params(support_batch, 
                                  params=theta, 
@@ -375,6 +376,33 @@ class Platipus(MetaBaseLearner):
                                                     attention_mask=query_batch['attention_mask'],
                                                     params=phi)
 
+=======
+        ce_loss = 0.0
+        for theta in theta_list: 
+            # theta_list is the list of sampled model weights 
+            # for each of these sampled weights (aka. thetas) we finetune the model on the 
+            # support set and evaluate the resulting model
+
+            # Make sure we don't change the LM head between different samples -- clone lm head
+            adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
+
+            # adapting theta to the support set -> adapted params are phi
+            phi = self._adapt_params(support_batch, 
+                                    params=theta, 
+                                    lm_head_weights=adapted_lm_head,
+                                    learning_rate=self.inner_layers_lr,
+                                    num_inner_steps=self.num_learning_steps,
+                                    clone_params=False,
+                                    optimize_classifier=True)
+
+            # evaluating on the query batch using the adapted params phi  
+            self.functional_model.eval()
+
+            outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
+                                                    attention_mask=query_batch['attention_mask'],
+                                                    params=phi)
+
+>>>>>>> platipus_added_features
             _, sample_ce_loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
                                                         task_type='classification')
             
@@ -501,7 +529,6 @@ class Platipus(MetaBaseLearner):
                 finetune_optimizer.zero_grad()
 
                 # run SGD on the finetuned theta parameters
-
                 outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
                                                         attention_mask=data_batch['attention_mask'],
                                                         params=finetuned_theta)
