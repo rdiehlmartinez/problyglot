@@ -31,6 +31,7 @@ class Platipus(MetaBaseLearner):
                                     kl_weight=0.5,
                                     num_conditioning_steps=5,
                                     num_learning_steps=100,
+                                    num_model_samples=5,
                                     use_first_order=False,
                                     language_embedding_method='val_grad',
                                     *args,
@@ -64,6 +65,8 @@ class Platipus(MetaBaseLearner):
                 condition the weights of the model on a given task
             * num_learning_steps (int): Number of gradients steps in the inner loop used to 
                 learn the meta-learning task 
+            * num_model_samples (int): Amount of times to sample weights from the model - the 
+                predictions from each of these models are then combined
             * use_first_order (bool): Whether a first order approximation of higher-order gradients
                 should be used (defaults to False)
             * language_embedding_method (str): How to represent the embedding that is used to
@@ -110,10 +113,13 @@ class Platipus(MetaBaseLearner):
         # hyper-param for trading off ce-loss and kl-loss
         self.kl_weight = float(kl_weight)
 
-        # number of steps to perform in the inner loop for conditioning the model/ learning the 
+        # number of steps to perform in the inner loop for conditioning the model/learning the 
         # meta-learning task
         self.num_conditioning_steps = int(num_conditioning_steps)
         self.num_learning_steps = int(num_learning_steps)
+
+        # number of times to sample model weights
+        self.num_model_samples = int(num_model_samples)
         
         # set flag to indicate if first-order approximation should be used (à la Reptile)
         if isinstance(use_first_order, str):
@@ -160,7 +166,8 @@ class Platipus(MetaBaseLearner):
     def _sample_adapted_params(self, data_batch, sampling_std, return_adapted_mean=False, 
                                 device=None, **adaptation_kwargs): 
         """ 
-        Helper method for sampling model weights that have been adapted to a batch of data. 
+        Helper method for sampling model weights that have been adapted to a batch of data. This 
+        method samples the weights of the model self.num_model_samples times and terutns 
 
         Args: 
             * data_batch (dict): Batch of data for a forward pass through the model 
@@ -172,30 +179,39 @@ class Platipus(MetaBaseLearner):
             * adaptation_kwargs: Kerword arguments to be passed into adapt_params_classification 
                 (see this method for more information) 
         Returns: 
-            * adapted_params ([torch.Tensor]): Adapted means of the weight distribution
-                (only returned if return_adapted_mean is set to True)
-            * sampled_weights ([torch.Tensor]): The generated list of tensor weights sampled 
-                from the model 
+            * adapted_params ([torch.Tensor]): Each entry corresponds to the adapted means of
+                the weight distribution (only returned if return_adapted_mean is set to True)
+            * sampled_weights_list ([[torch.Tensor]]): A list of length self.num_model_samples
+                where each entry corresponds to the generated list of tensor weights sampled from
+                the model 
         """
         if device is None:
+            # device is not None when we are doing multi-GPU training
             device = self.base_device
 
         adapted_params = self._adapt_params(data_batch, **adaptation_kwargs)
 
-        sampled_weights = [None] * len(adapted_params) 
 
-        for i in range(len(sampled_weights)):
-            if adapted_params[i].requires_grad: 
-                sampled_weights[i] = adapted_params[i] + \
-                    torch.randn_like(input=adapted_params[i], device=device) * \
-                        torch.exp(input=sampling_std[i])
-            else: 
-                sampled_weights[i] = self.mu_theta[i]
+        sampled_weights_list = []
+
+        for _ in range(self.num_model_samples):
+
+            sampled_weights = [None] * len(adapted_params) 
+
+            for i in range(len(sampled_weights)):
+                if adapted_params[i].requires_grad: 
+                    sampled_weights[i] = adapted_params[i] + \
+                        torch.randn_like(input=adapted_params[i], device=device) * \
+                            torch.exp(input=sampling_std[i])
+                else: 
+                    sampled_weights[i] = self.mu_theta[i]
+
+            sampled_weights_list.append(sampled_weights)
 
         if return_adapted_mean:
-            return (adapted_params, sampled_weights)
+            return (adapted_params, sampled_weights_list)
         else: 
-            return sampled_weights  
+            return sampled_weights_list  
 
 
     ###### Model training methods ######
@@ -302,42 +318,53 @@ class Platipus(MetaBaseLearner):
             lm_head = TaskHead.initialize_task_head(task_type='classification',
                                                     method=self.lm_head_init_method,
                                                     init_kwargs=init_kwargs)
-            
-        adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
-
 
         # sampling theta after adapting model to query_batch
-        mu_theta_query, theta = self._sample_adapted_params(
+        mu_theta_query, theta_list = self._sample_adapted_params(
                                                         query_batch, 
                                                         sampling_std=self.log_v_q,
                                                         return_adapted_mean=True,
                                                         params=self.mu_theta,
-                                                        lm_head_weights=adapted_lm_head,
+                                                        lm_head_weights=lm_head,
                                                         learning_rate=self.gamma_q,
                                                         num_inner_steps=self.num_conditioning_steps,
                                                         clone_params=True,
                                                         device=device)
+        
 
-        # adapting theta to the support set -> adapted params are phi
-        phi = self._adapt_params(support_batch, 
-                                 params=theta, 
-                                 lm_head_weights=adapted_lm_head,
-                                 learning_rate=self.inner_layers_lr,
-                                 num_inner_steps=self.num_learning_steps,
-                                 clone_params=False,
-                                 optimize_classifier=True)
+        ce_loss = 0.0
+        for theta in theta_list: 
+            # theta_list is the list of sampled model weights 
+            # for each of these sampled weights (aka. thetas) we finetune the model on the 
+            # support set and evaluate the resulting model
 
-        # evaluating on the query batch using the adapted params phi  
-        self.functional_model.eval()
+            # Make sure we don't change the LM head between different samples -- clone lm head
+            adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
 
-        outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
-                                                attention_mask=query_batch['attention_mask'],
-                                                params=phi)
+            # adapting theta to the support set -> adapted params are phi
+            phi = self._adapt_params(support_batch, 
+                                    params=theta, 
+                                    lm_head_weights=adapted_lm_head,
+                                    learning_rate=self.inner_layers_lr,
+                                    num_inner_steps=self.num_learning_steps,
+                                    clone_params=False,
+                                    optimize_classifier=True)
 
-        self.functional_model.train()
+            # evaluating on the query batch using the adapted params phi  
+            self.functional_model.eval()
 
-        _, ce_loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
-                                             task_type='classification')
+            outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
+                                                    attention_mask=query_batch['attention_mask'],
+                                                    params=phi)
+
+            _, sample_ce_loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
+                                                        task_type='classification')
+            
+            ce_loss = ce_loss + sample_ce_loss
+            self.functional_model.train()
+        
+        # average the cross-entropy loss by all the samples we generated
+        ce_loss = ce_loss/len(theta_list)
 
         # computing KL loss (requires adapting mu_theta to the support set)
         
@@ -382,8 +409,10 @@ class Platipus(MetaBaseLearner):
 
         Returns:
             * inference_params dict containing: 
-                * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
-                * task_head_weights (dict): Weights of task head (classifier head)
+                * finetuned_params_list ([[nn.Parameter]]): List of finetuned model parameters
+                    corresponding to self.num_model_samples samples of the model. 
+                * task_head_weights_list ([dict]): List of task head weights for each of the
+                    samples of model weights 
         """
 
         if not hasattr(self, "functional_model"):
@@ -397,6 +426,7 @@ class Platipus(MetaBaseLearner):
         # NOTE: the adaptation batch is in the same form as the batches of training used 
         # during meta training 
 
+            
         if self.retain_lm_head:
             lm_head = self.retained_lm_head
         else:
@@ -407,85 +437,94 @@ class Platipus(MetaBaseLearner):
                                                     method=self.lm_head_init_method,
                                                     init_kwargs=lm_init_kwargs)
 
-        sampled_theta = self._sample_adapted_params(adaptation_batch,
-                                                    sampling_std=self.log_sigma_theta,
-                                                    params=self.mu_theta,
-                                                    lm_head_weights=lm_head,
-                                                    learning_rate=self.gamma_p,
-                                                    num_inner_steps=self.num_conditioning_steps,
-                                                    clone_params=True,
-                                                    evaluation_mode=True)
+        theta_list = self._sample_adapted_params(adaptation_batch,
+                                                 sampling_std=self.log_sigma_theta,
+                                                 params=self.mu_theta,
+                                                 lm_head_weights=lm_head,
+                                                 learning_rate=self.gamma_p,
+                                                 num_inner_steps=self.num_conditioning_steps,
+                                                 clone_params=True,
+                                                 evaluation_mode=True)
 
         ### Initializing the task head used for the downstream NLU task
         task_init_data_batch = move_to_device(next(iter(finetune_dataloader)), self.base_device)
         task_init_kwargs = self.get_task_init_kwargs(task_head_init_method, n_labels,
                                                      data_batch=task_init_data_batch)
-        task_head_weights = TaskHead.initialize_task_head(task_type=task_type,
-                                                          method=task_head_init_method,
-                                                          init_kwargs=task_init_kwargs)
 
-        # detaching parameters from original computation graph to create new leaf variables
-        finetuned_theta = []
-        for p in sampled_theta:
-            detached_p = p.detach()
-            detached_p.requires_grad = p.requires_grad
-            finetuned_theta.append(detached_p)
 
-        finetuned_task_head_weights = {}
-        for k, p in task_head_weights.items():
-            detached_p = p.detach()
-            detached_p.requires_grad = True
-            finetuned_task_head_weights[k] = detached_p
+        finetuned_params_list = []
+        task_head_weights_list = []
 
-        finetune_params = itertools.chain(finetuned_theta,
-                                          finetuned_task_head_weights.values())
-        finetune_optimizer = torch.optim.Adam(params=finetune_params)
+        for theta in theta_list:
+            task_head_weights = TaskHead.initialize_task_head(task_type=task_type,
+                                                              method=task_head_init_method,
+                                                              init_kwargs=task_init_kwargs)
 
-        for batch_idx, data_batch in enumerate(finetune_dataloader):
-            data_batch = move_to_device(data_batch, self.base_device)
-            finetune_optimizer.zero_grad()
 
-            # run SGD on the finetuned theta parameters
+            # detaching parameters from original computation graph to create new leaf variables
+            finetuned_theta = []
+            for p in theta:
+                detached_p = p.detach()
+                detached_p.requires_grad = p.requires_grad
+                finetuned_theta.append(detached_p)
 
-            outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
-                                                    attention_mask=data_batch['attention_mask'],
-                                                    params=finetuned_theta)
+            finetuned_task_head_weights = {}
+            for k, p in task_head_weights.items():
+                detached_p = p.detach().clone()
+                detached_p.requires_grad = True
+                finetuned_task_head_weights[k] = detached_p
 
-            _, loss = self._compute_task_loss(outputs, data_batch, finetuned_task_head_weights, 
-                                              task_type=task_type)
+            finetune_params = itertools.chain(finetuned_theta,
+                                            finetuned_task_head_weights.values())
+            finetune_optimizer = torch.optim.Adam(params=finetune_params)
 
-            loss.backward()
-            finetune_optimizer.step()
+            for batch_idx, data_batch in enumerate(finetune_dataloader):
+                data_batch = move_to_device(data_batch, self.base_device)
+                finetune_optimizer.zero_grad()
 
-            if max_finetuning_batch_steps > 0 and (batch_idx + 1) >= max_finetuning_batch_steps:
-                break
+                # run SGD on the finetuned theta parameters
+
+                outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
+                                                        attention_mask=data_batch['attention_mask'],
+                                                        params=finetuned_theta)
+
+                _, loss = self._compute_task_loss(outputs, data_batch, finetuned_task_head_weights, 
+                                                task_type=task_type)
+
+                loss.backward()
+                finetune_optimizer.step()
+
+                if max_finetuning_batch_steps > 0 and (batch_idx + 1) >= max_finetuning_batch_steps:
+                    break
+
+            finetuned_params_list.append(finetuned_theta)
+            task_head_weights_list.append(finetuned_task_head_weights)
 
         inference_params = {
-            "finetuned_params": finetuned_theta, 
-            "task_head_weights": finetuned_task_head_weights
+            "finetuned_params_list": finetuned_params_list, 
+            "task_head_weights_list": task_head_weights_list
         }
 
         return inference_params
 
 
-    def run_inference(self, task_type, inference_dataloader, finetuned_params, task_head_weights,
-                      adaptation_batch=None, **kwargs):
+    def run_inference(self, task_type, inference_dataloader, finetuned_params_list,
+                      task_head_weights_list, **kwargs):
         """ 
         This method is to be called after run_finetuning. 
         
         As the name suggests, this method runs inference on an NLU dataset for some task.
-        The primary adaptation of the weights for a given task should  occur in the
-        run_finetuning method. It is possible, however, to  adapt the weights one more time
-        on a given dataset, by passing in a batch of data (adaptation_batch). 
+        The primary adaptation of the weights for a given task should occur in the
+        run_finetuning method. 
 
         Args: 
             * task_type (str): Type of task (e.g. 'classification')
             * inference_dataloader (torch.data.Dataloader): The dataset for inference is passed
                 in as a dataloader (in most cases this will be an NLUDataloader)
-            * finetuned_params ([nn.Parameter]): List of the finetuned model's parameters
-            * task_head_weights (dict): Weights of task head (classifier head)
-            * adaptation_batch (dict): A dictionary containing the required data for running
-                a forward pass of the model (see run_inner_loop for explanation of the dictionary)
+            * finetuned_params_list ([[nn.Parameter]]): List of finetuned model parameters
+                corresponding to self.num_model_samples samples of the model. 
+            * task_head_weights_list ([dict]): List of task head weights for each of the samples 
+                of model weights 
 
         Returns: 
             * predictions ([int]): A dictionary storing the model's predictions for each 
@@ -494,32 +533,9 @@ class Platipus(MetaBaseLearner):
         """
         if not hasattr(self, "functional_model"):
             # If the model is only being evaluated (and not being finetuned) it might not have
-            # a functionalized version
+            # a functionalized version 
             self.functionalize_model()
 
-        if adaptation_batch is not None:
-                # if adaptation_batch is passed in, we adapt the model's parameters to this data
-
-                if self.retain_lm_head:
-                    lm_head = self.retained_lm_head
-                else:
-                    adaptation_batch = move_to_device(adaptation_batch, self.base_device)
-                    lm_init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method,
-                                                            self.lm_head_n,
-                                                            data_batch=adaptation_batch)
-                    lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                            method=self.lm_head_init_method,
-                                                            init_kwargs=lm_init_kwargs)
-                finetuned_params = self._sample_adapted_params(
-                                                        adaptation_batch, 
-                                                        sampling_std=self.log_sigma_theta,
-                                                        params=finetuned_params,
-                                                        lm_head_weights=lm_head,
-                                                        learning_rate=self.gamma_p,
-                                                        num_inner_steps=self.num_conditioning_steps,
-                                                        clone_params=True,
-                                                        evaluation_mode=True)
-        
         predictions = []
         total_loss = 0.0
         total_samples = 0
@@ -531,12 +547,26 @@ class Platipus(MetaBaseLearner):
             for data_batch in inference_dataloader: 
                 data_batch = move_to_device(data_batch, self.base_device)
 
-                outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
-                                                        attention_mask=data_batch['attention_mask'],
-                                                        params=finetuned_params)
+                logits = 0.0
+                loss = 0.0
 
-                logits, loss = self._compute_task_loss(outputs, data_batch, task_head_weights,
-                                                       task_type=task_type)
+                for finetuned_params, task_head_weights in zip(finetuned_params_list,
+                                                               task_head_weights_list):
+
+                    outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
+                                                            attention_mask=\
+                                                                data_batch['attention_mask'],
+                                                            params=finetuned_params)
+
+                    sample_logits, sample_loss = self._compute_task_loss(outputs, data_batch,
+                                                                         task_head_weights,
+                                                                         task_type=task_type)                    
+                    
+                    logits = logits + sample_logits
+                    loss = loss + sample_loss
+                
+                logits = logits/len(finetuned_params_list)
+                loss = loss/len(finetuned_params_list)
 
                 predictions.extend(torch.argmax(logits, dim=-1).tolist())
 
