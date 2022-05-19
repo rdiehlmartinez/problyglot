@@ -332,51 +332,6 @@ class Platipus(MetaBaseLearner):
                                                         device=device)
         
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-        # adapting theta to the support set -> adapted params are phi
-        phi = self._adapt_params(support_batch, 
-                                 params=theta, 
-                                 lm_head_weights=adapted_lm_head,
-                                 learning_rate=self.inner_lr,
-                                 num_inner_steps=self.num_learning_steps,
-                                 clone_params=False,
-                                 optimize_classifier=True)
-
-        # evaluating on the query batch using the adapted params phi  
-        self.functional_model.eval()
-
-        outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
-                                                attention_mask=query_batch['attention_mask'],
-                                                params=phi)
-=======
-        ce_loss = 0.0
-        for theta in theta_list: 
-            # theta_list is the list of sampled model weights 
-            # for each of these sampled weights (aka. thetas) we finetune the model on the 
-            # support set and evaluate the resulting model
-
-            # Make sure we don't change the LM head between different samples -- clone lm head
-            adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
-
-            # adapting theta to the support set -> adapted params are phi
-            phi = self._adapt_params(support_batch, 
-                                    params=theta, 
-                                    lm_head_weights=adapted_lm_head,
-                                    learning_rate=self.inner_layers_lr,
-                                    num_inner_steps=self.num_learning_steps,
-                                    clone_params=False,
-                                    optimize_classifier=True)
-
-            # evaluating on the query batch using the adapted params phi  
-            self.functional_model.eval()
->>>>>>> 611a55a... enabling multiple samples of platipus
-
-            outputs = self.functional_model.forward(input_ids=query_batch['input_ids'],
-                                                    attention_mask=query_batch['attention_mask'],
-                                                    params=phi)
-
-=======
         ce_loss = 0.0
         for theta in theta_list: 
             # theta_list is the list of sampled model weights 
@@ -402,7 +357,6 @@ class Platipus(MetaBaseLearner):
                                                     attention_mask=query_batch['attention_mask'],
                                                     params=phi)
 
->>>>>>> platipus_added_features
             _, sample_ce_loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
                                                         task_type='classification')
             
