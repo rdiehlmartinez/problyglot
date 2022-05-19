@@ -286,6 +286,7 @@ class MetaBaseLearner(BaseLearner):
         """
         super().__init__(base_model, *args, **kwargs)
 
+        # Deducing the num of layers and mapping each parameter to the layer that parameter is in
         self.param_idx_to_layer = {}
         for idx, (name, _) in enumerate(base_model.named_parameters()): 
             layer = re.findall(r"layer.\d*", name)
@@ -295,7 +296,6 @@ class MetaBaseLearner(BaseLearner):
                 self.param_idx_to_layer[idx] = int(layer[0][6:])
             else: 
                 self.param_idx_to_layer[idx] = None
-
         layers = set(self.param_idx_to_layer.values())            
 
         # We store a list of learning rates for each layer of the model that are meta-learned 
