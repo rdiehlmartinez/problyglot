@@ -288,7 +288,12 @@ class Problyglot(object):
             if self.learner_method != "baseline":
                 # any meta-learning approach will want to track the learned learning rates
                 wandb.define_metric("classifier_lr", step_metric="num_task_batches")
-                wandb.define_metric("inner_lr", step_metric="num_task_batches")
+                
+                # for inner layers we need to track lr per layer
+                num_layers = len(self.learner.inner_layers_lr)
+                for layer_idx in range(num_layers):
+                    wandb.define_metric(f"inner_layer_{layer_idx}_lr",
+                                        step_metric="num_task_batches")
 
         if self.config.getboolean("PROBLYGLOT", "run_initial_eval", fallback=True) and \
             self.num_task_batches == 0:
@@ -381,10 +386,14 @@ class Problyglot(object):
                     
                     if self.learner_method != "baseline": 
                         # wandb logging info for any meta-learner
-                        wandb.log({"classifier_lr": self.learner.classifier_lr.item(), 
-                                   "inner_lr": self.learner.inner_lr.item()},
+                        wandb.log({"classifier_lr": self.learner.classifier_lr.item()},
                                    commit=False
                                   )
+
+                        for layer_idx, inner_layer in enumerate(self.learner.inner_layers_lr):
+                                wandb.log({f"inner_layer_{layer_idx}_lr": inner_layer.item()}, 
+                                          commit=False
+                                         )
 
                     wandb.log({"train.loss": task_batch_loss,
                                "num_task_batches": self.num_task_batches},

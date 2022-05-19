@@ -343,12 +343,12 @@ class Platipus(MetaBaseLearner):
 
             # adapting theta to the support set -> adapted params are phi
             phi = self._adapt_params(support_batch, 
-                                    params=theta, 
-                                    lm_head_weights=adapted_lm_head,
-                                    learning_rate=self.inner_layers_lr,
-                                    num_inner_steps=self.num_learning_steps,
-                                    clone_params=False,
-                                    optimize_classifier=True)
+                                     params=theta, 
+                                     lm_head_weights=adapted_lm_head,
+                                     learning_rate=self.inner_layers_lr,
+                                     num_inner_steps=self.num_learning_steps,
+                                     clone_params=False,
+                                     optimize_classifier=True)
 
             # evaluating on the query batch using the adapted params phi  
             self.functional_model.eval()
@@ -360,6 +360,7 @@ class Platipus(MetaBaseLearner):
             _, sample_ce_loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
                                                         task_type='classification')
             
+
             ce_loss = ce_loss + sample_ce_loss
             self.functional_model.train()
         
