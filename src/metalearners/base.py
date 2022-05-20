@@ -306,6 +306,7 @@ class MetaBaseLearner(BaseLearner):
                                         )
                                         for layer in layers if layer is not None
                                     ])
+
         self.classifier_lr = torch.nn.Parameter(torch.tensor(float(classifier_lr)).\
                                                     to(self.base_device))
 
@@ -398,7 +399,7 @@ class MetaBaseLearner(BaseLearner):
         else:
             adapted_params = params
 
-        for _ in range(num_inner_steps):
+        for num_step in range(num_inner_steps):
             
             # Running forward pass through functioanl model and computing classificaiton loss
             outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
@@ -407,7 +408,7 @@ class MetaBaseLearner(BaseLearner):
 
             _, loss = self._compute_task_loss(outputs, data_batch, lm_head_weights,
                                               task_type='classification')
-                                                        
+
             # Computing resulting gradients of the inner loop
             grad_params = [p for p in adapted_params if p.requires_grad]
 
@@ -429,7 +430,15 @@ class MetaBaseLearner(BaseLearner):
             for idx, p in enumerate(adapted_params):
                 
                 if isinstance(learning_rate, torch.nn.ParameterList):
-                    param_lr = self.param_idx_to_layer[idx]
+                    # Extracting the layer of the parameter
+                    p_layer = self.param_idx_to_layer[idx]
+                    if p_layer is None: 
+                        # Param is not in a layer we train (e.g. a pooling or embedding layer)
+                        # so the param should not have requires_grad set 
+                        assert(not p.requires_grad),\
+                            f"Model param at idx: {idx} requires grad but has no learning rate"
+                        continue
+                    param_lr = learning_rate[p_layer]
                 else: 
                     param_lr = learning_rate
 
