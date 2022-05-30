@@ -60,7 +60,9 @@ JOBID=$SLURM_JOB_ID
 application="run_model.sh"
 
 #! Run options for the application:
-options="$@ --run_id $JOBID"
+runpath=$1
+runid=${2:-$JOBID}
+options="$runpath --run_id $runid"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory
@@ -108,5 +110,5 @@ echo -e "\nExecuting command:\n==================\n$CMD\n"
 timeout -s SIGINT --kill-after=5m 11h $CMD
 if [[ $? -eq 124 ]]; then
   cd scripts
-  sbatch run_model.wilkes3
+  sbatch run_model.wilkes3 $runpath $runid
 fi

@@ -86,7 +86,9 @@ class XNLIDatasetGenerator(NLUDatasetGenerator):
                                                          translated_file_path)
                 language_file_dict['finetune'] = {"lng": file_path_lng,
                                                   "file_path": translated_full_file_path}
-            
+            else:
+                language_file_dict['finetune'] = {"lng": eng_lng_str, "file_path": eng_file_path}
+
             full_file_path = os.path.join(root_path, file_path)
             language_file_dict['evaluation'] = {"lng": file_path_lng, "file_path": full_file_path}
 
