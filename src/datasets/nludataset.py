@@ -126,13 +126,23 @@ class NLUDataset(IterableDataset, metaclass=abc.ABCMeta):
                         
                     curr_samples.append(token_ids)
 
-                    for idx, token_id in enumerate(token_ids): 
+                    # Within the sample keeps track of where a given token id occurs
+                    sample_tok_ids_to_idx = defaultdict(list)
+
+                    for idx, token_id in enumerate(token_ids):
                         if token_id in SPECIAL_TOKEN_IDS:
                             # don't include special tokens 
                             continue
-                        
-                        curr_subword_to_sample[token_id].append((curr_samples_processed, idx))
-                
+
+                        sample_tok_ids_to_idx[token_id].append(idx)
+
+                    # We loop over the tokens we've just seen in the sample and the 
+                    # corresponding indices where each token occurs, and we add that 
+                    # information into the curr_subword_to_sample 
+                    for token_id, sample_token_idx in sample_tok_ids_to_idx.items():
+                        curr_subword_to_sample[token_id].append((curr_samples_processed,
+                                                                    sample_token_idx))
+
                     curr_samples_processed += 1 
 
                     if curr_samples_processed == sample_size:

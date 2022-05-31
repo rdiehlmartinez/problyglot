@@ -222,6 +222,7 @@ def main():
         if finetune_dataset.language == "en":
             adaptation_batch = finetune_dataset.get_adaptation_batch()
             print(adaptation_batch)
+            exit()
 
 if __name__ == '__main__':
     main()

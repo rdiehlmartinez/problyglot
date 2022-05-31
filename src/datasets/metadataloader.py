@@ -30,10 +30,10 @@ class MetaCollator(object):
             * batch: tuple containing the following: 
                 * task_name (str): task name (e.g. the language) of the current batch of data 
                 * (support_set, query_set), where this tuple contains the following: 
-                    * support_set {token id: [K samples where token id occurs]}: mapping of N token ids 
-                        to K samples per token id occurs
-                    * query_set {token id: [Q samples where token id occurs]}: mapping of N token ids 
-                        to Q samples per token id occurs
+                    * support_set {token id: [K samples where token id occurs]}: mapping of N token
+                        ids to K samples per token id occurs
+                    * query_set {token id: [Q samples where token id occurs]}: mapping of N token
+                        ids to Q samples per token id occurs
 
         Returns: 
             * task_name (str): task name (i.e. the language) of batch
@@ -49,11 +49,6 @@ class MetaCollator(object):
         """
         
         task_name, (support_samples, query_samples) = batch[0] # only 1-task per batch 
-
-        # since the task is MLM the target token we classify over is the MASK token
-        # if we ever wanted to classify NLU tasks then the target token would be the 
-        # the CLS token
-        target_tok_id = MASK_TOKEN_ID
 
         def process_batch(batch_samples):
             """ 
@@ -81,12 +76,13 @@ class MetaCollator(object):
                         batch_max_seq_len = len(subword_sample)
                     batch_inputs.append(subword_sample)
                 
-            # NOTE: Padding token needs to be 1, in order to be consistent with hugging face tokenizer: 
+            # NOTE: Padding token needs to be 1, in order to be consistent with HF tokenizer: 
             input_tensor = torch.ones((len(batch_inputs), batch_max_seq_len))
 
             for idx, sample in enumerate(batch_inputs): 
                 input_tensor[idx, :len(sample)] = torch.tensor(sample)
-                batch_input_target_idx.append(sample.index(target_tok_id))
+                # NOTE: we are using CLS as the token we apply the classification layer over
+                batch_input_target_idx.append(0)
 
             input_target_idx = torch.tensor(batch_input_target_idx)
             label_tensor = torch.tensor(batch_labels)

@@ -307,12 +307,12 @@ class IterableLanguageTaskDataset(object):
 
         self.lock.release()
         self.event.set()
+
         return (support_samples, query_samples)
 
     def __iter__(self):
         """ To comply with iterator protocol """
         return self
-
 
     # NOTE: 
     # --- The following methods should only be called by the child process ---
@@ -340,17 +340,25 @@ class IterableLanguageTaskDataset(object):
     def generate_N_K_samples(curr_subword_to_sample, curr_samples, N, K, Q, mask_sampling_method,
                              mask_sampling_prop_rate, language):
         """
-        Given a set of samples (curr_samples) drawn from the dataset generates a 
-        sample for N-way K-shot classification support set + Q samples for the query set 
+        Given a set of samples (curr_samples) drawn from the dataset generates a sample for
+        N-way K-shot classification support set + Q samples for the query set. Implemented as 
+        a static method to support other classes calling this function.
 
         Args: 
             * curr_subword_to_sample {subword_token: [(index of occurence in curr_samples,
-                                                       index of occurence within the sample)]:
+                                                       [indices of occurence within the sample])]:
                 A dictionary mapping a current subword token to a tuple containing: 
                 1. the index of the sample in curr_samples where that subword token occurs and 
-                2. within the given sample the index of the location where that token occurs
-                We do this because a given token can occur multiple times within a given sample
+                2. within the given sample all the indices of the location where that token occurs
             * curr_samples [List]: A list of self.sample_size number of samples 
+
+            If using an instance of this class - will by defined as instance variables. 
+            * N (int): Number of classes in the meta learning task 
+            * K (int): Number of support samples 
+            * Q (int): Number of query samples 
+            * mask_sampling_method (str): Method for sampling masked words
+            * mask_sampling_prop_rate (float): Sampling rate 
+            * language (str): language of the N-way K-shot task
 
         Returns: 
             * support_set {token id: [K samples where token id occurs]}: mapping of N token ids 
@@ -359,7 +367,6 @@ class IterableLanguageTaskDataset(object):
                 to Q samples per token id occurs
 
         """
-    
         support_set = defaultdict(list)
         query_set = defaultdict(list)
 
@@ -396,14 +403,16 @@ class IterableLanguageTaskDataset(object):
             """
             Given k_index_information, a tuple containing the following info,
                 1. the index in curr_samples where the subword occurs
-                2. within the sample the index where the sample occurs 
+                2. within the sample, a list of the indices where the sample occurs 
 
             returns a sample with the correct subword masked out.
             """
            
-            across_sample_index, within_sample_index = k_index_information
+            across_sample_index, within_sample_indices = k_index_information
             curr_sample = copy.deepcopy(curr_samples[across_sample_index])
-            curr_sample[within_sample_index] = MASK_TOKEN_ID
+
+            for within_sample_idx in within_sample_indices:
+                curr_sample[within_sample_idx] = MASK_TOKEN_ID
 
             return curr_sample
     
@@ -413,7 +422,6 @@ class IterableLanguageTaskDataset(object):
             # note that in a given sample there might be multiple occurences of a token
             # so we need to specify which token it is we want to mask
             subword_indices = filtered_subword_to_sample[sampled_n]
-
             sampled_K_plus_Q_indices = random.sample(subword_indices, k=(K + Q))
 
             for k_index_information in sampled_K_plus_Q_indices[:K]:
@@ -498,12 +506,23 @@ class IterableLanguageTaskDataset(object):
                                 continue
 
                             curr_samples.append(token_ids)
+
+                            # Within the sample keeps track of where a given token id occurs
+                            sample_tok_ids_to_idx = defaultdict(list)
+
                             for idx, token_id in enumerate(token_ids):
                                 if token_id in SPECIAL_TOKEN_IDS:
                                     # don't include special tokens 
                                     continue
+
+                                sample_tok_ids_to_idx[token_id].append(idx)
+
+                            # We loop over the tokens we've just seen in the sample and the 
+                            # corresponding indices where each token occurs, and we add that 
+                            # information into the curr_subword_to_sample 
+                            for token_id, sample_token_idx in sample_tok_ids_to_idx.items():
                                 curr_subword_to_sample[token_id].append((curr_samples_processed,
-                                                                         idx))
+                                                                         sample_token_idx))
                             
                             curr_samples_processed += 1
                             total_samples_processed += 1 
