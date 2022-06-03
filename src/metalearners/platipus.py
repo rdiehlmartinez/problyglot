@@ -32,8 +32,6 @@ class Platipus(MetaBaseLearner):
                                     num_conditioning_steps=5,
                                     num_learning_steps=100,
                                     num_model_samples=5,
-                                    use_first_order=False,
-                                    language_embedding_method='val_grad',
                                     *args,
                                     **kwargs):
         """
@@ -42,7 +40,7 @@ class Platipus(MetaBaseLearner):
         Reads in a base model and sets up all of the metalearners of the model that are going to 
         be learned, using the higher library. Platipus requires tracking meta parameters that
         represent the mean and standard deviations of the weights that are to-be meta-learned.
-        These meta parameters are stored  as internal attributes of platipus, and are learned via
+        These meta parameters are stored as internal attributes of platipus, and are learned via
         an optimizer of type (optimizer_type). The main logic of platipus is in the
         run_inner_loop() and finetuning/evaluation methods which implement the training 
         and inference steps of platipus. 
@@ -57,7 +55,8 @@ class Platipus(MetaBaseLearner):
                     conditioned on the support set 
                 * gamma_q (float): std. dev of the gaussian dist. from which we sample weights 
                     conditioned on the query set 
-                * inner_lr (float): inner-loop learning rate of the base_model 
+                * inner_lr (float): inner-loop learning rate of the base_model (for all the 
+                    learned layers)
                 * classifier_lr (float): inner-loop learning rate of the classifier head
             * kl_weight (float): Trade-off hyper-parameter between the CE term and the KL term of
                 the ELBO objective 
@@ -67,12 +66,6 @@ class Platipus(MetaBaseLearner):
                 learn the meta-learning task 
             * num_model_samples (int): Amount of times to sample weights from the model - the 
                 predictions from each of these models are then combined
-            * use_first_order (bool): Whether a first order approximation of higher-order gradients
-                should be used (defaults to False)
-            * language_embedding_method (str): How to represent the embedding that is used to
-                condition the language-dependent probability distribution from which we sample
-                weights for a given language (defaults to 'val_grad'). 'Val_grad' is the implicit 
-                method used in the platipus paper. 
         """
 
         super().__init__(base_model, inner_lr, classifier_lr, *args, **kwargs)
@@ -120,12 +113,6 @@ class Platipus(MetaBaseLearner):
 
         # number of times to sample model weights
         self.num_model_samples = int(num_model_samples)
-        
-        # set flag to indicate if first-order approximation should be used (à la Reptile)
-        if isinstance(use_first_order, str):
-            use_first_order = eval(use_first_order)
-
-        self.use_first_order = use_first_order
 
     ###### Helper functions ######
 
@@ -189,8 +176,7 @@ class Platipus(MetaBaseLearner):
             # device is not None when we are doing multi-GPU training
             device = self.base_device
 
-        adapted_params = self._adapt_params(data_batch, **adaptation_kwargs)
-
+        adapted_params, _ = self._adapt_params(data_batch, **adaptation_kwargs)
 
         sampled_weights_list = []
 
@@ -315,9 +301,9 @@ class Platipus(MetaBaseLearner):
         else: 
             init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
                                                     data_batch=support_batch, device=device)
-            lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                    method=self.lm_head_init_method,
-                                                    init_kwargs=init_kwargs)
+            lm_head_weights = TaskHead.initialize_task_head(task_type='classification',
+                                                            method=self.lm_head_init_method,
+                                                            init_kwargs=init_kwargs)
 
         # sampling theta after adapting model to query_batch
         mu_theta_query, theta_list = self._sample_adapted_params(
@@ -325,9 +311,10 @@ class Platipus(MetaBaseLearner):
                                                         sampling_std=self.log_v_q,
                                                         return_adapted_mean=True,
                                                         params=self.mu_theta,
-                                                        lm_head_weights=lm_head,
+                                                        lm_head_weights=lm_head_weights,
                                                         learning_rate=self.gamma_q,
                                                         num_inner_steps=self.num_conditioning_steps,
+                                                        optimize_classifier=False,
                                                         clone_params=True,
                                                         device=device)
         
@@ -338,17 +325,16 @@ class Platipus(MetaBaseLearner):
             # for each of these sampled weights (aka. thetas) we finetune the model on the 
             # support set and evaluate the resulting model
 
-            # Make sure we don't change the LM head between different samples -- clone lm head
-            adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
-
-            # adapting theta to the support set -> adapted params are phi
-            phi = self._adapt_params(support_batch, 
-                                     params=theta, 
-                                     lm_head_weights=adapted_lm_head,
-                                     learning_rate=self.inner_layers_lr,
-                                     num_inner_steps=self.num_learning_steps,
-                                     clone_params=False,
-                                     optimize_classifier=True)
+            # adapting sampled theta to the support set -> adapted params are phi
+            phi, adapted_lm_head_weights = self._adapt_params(
+                                                        support_batch, 
+                                                        params=theta, 
+                                                        lm_head_weights=lm_head_weights,
+                                                        learning_rate=self.inner_layers_lr,
+                                                        num_inner_steps=self.num_learning_steps,
+                                                        optimize_classifier=True,
+                                                        clone_params=False,
+                                                        reference_params=self.mu_theta)
 
             # evaluating on the query batch using the adapted params phi  
             self.functional_model.eval()
@@ -357,10 +343,10 @@ class Platipus(MetaBaseLearner):
                                                     attention_mask=query_batch['attention_mask'],
                                                     params=phi)
 
-            _, sample_ce_loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
+            _, sample_ce_loss = self._compute_task_loss(outputs, query_batch,
+                                                        adapted_lm_head_weights, 
                                                         task_type='classification')
             
-
             ce_loss = ce_loss + sample_ce_loss
             self.functional_model.train()
         
@@ -370,11 +356,12 @@ class Platipus(MetaBaseLearner):
         # computing KL loss (requires adapting mu_theta to the support set)
         
         # mu theta adapted to the support set (line 10 from algorithm 1) 
-        mu_theta_support = self._adapt_params(support_batch, 
+        mu_theta_support, _ = self._adapt_params(support_batch, 
                                               params=self.mu_theta,
-                                              lm_head_weights=lm_head,
+                                              lm_head_weights=lm_head_weights,
                                               learning_rate=self.gamma_p,
                                               num_inner_steps=self.num_conditioning_steps,
+                                              optimize_classifier=False,
                                               clone_params=True)
 
         kl_loss = kl_divergence_gaussians(p=[*mu_theta_query, *self.log_v_q],
@@ -427,23 +414,23 @@ class Platipus(MetaBaseLearner):
         # NOTE: the adaptation batch is in the same form as the batches of training used 
         # during meta training 
 
-            
         if self.retain_lm_head:
             lm_head = self.retained_lm_head
         else:
             adaptation_batch = move_to_device(adaptation_batch, self.base_device)
             lm_init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
-                                                    data_batch=adaptation_batch)
-            lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                    method=self.lm_head_init_method,
-                                                    init_kwargs=lm_init_kwargs)
+                                                       data_batch=adaptation_batch)
+            lm_head_weights = TaskHead.initialize_task_head(task_type='classification',
+                                                            method=self.lm_head_init_method,
+                                                            init_kwargs=lm_init_kwargs)
 
         theta_list = self._sample_adapted_params(adaptation_batch,
                                                  sampling_std=self.log_sigma_theta,
                                                  params=self.mu_theta,
-                                                 lm_head_weights=lm_head,
+                                                 lm_head_weights=lm_head_weights,
                                                  learning_rate=self.gamma_p,
                                                  num_inner_steps=self.num_conditioning_steps,
+                                                 optimize_classifier=False,
                                                  clone_params=True,
                                                  evaluation_mode=True)
 
@@ -475,15 +462,15 @@ class Platipus(MetaBaseLearner):
                 detached_p.requires_grad = True
                 finetuned_task_head_weights[k] = detached_p
 
+            # Setting up optimizer to finetune the model 
             finetune_params = itertools.chain(finetuned_theta,
-                                            finetuned_task_head_weights.values())
+                                              finetuned_task_head_weights.values())
             finetune_optimizer = torch.optim.Adam(params=finetune_params)
 
             for batch_idx, data_batch in enumerate(finetune_dataloader):
                 data_batch = move_to_device(data_batch, self.base_device)
                 finetune_optimizer.zero_grad()
 
-                # run SGD on the finetuned theta parameters
                 outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
                                                         attention_mask=data_batch['attention_mask'],
                                                         params=finetuned_theta)

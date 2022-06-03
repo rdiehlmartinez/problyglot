@@ -25,7 +25,6 @@ class MAML(MetaBaseLearner):
                                     inner_lr=1e-2,
                                     classifier_lr=1e-1,
                                     num_learning_steps=5,
-                                    use_first_order=False,
                                     *args,
                                     **kwargs):
         """
@@ -45,18 +44,16 @@ class MAML(MetaBaseLearner):
                 * classifier_lr (float): inner-loop learning rate of the classifier head
             * num_learning_steps (int): Number of gradients steps in the inner loop used 
                 to learn the meta-learning task
-            * use_first_order (bool): Whether a first order approximation of higher-order gradients
-                should be used (defaults to False)
         """
 
         super().__init__(base_model, inner_lr, classifier_lr, *args, **kwargs)
 
         # Initializing params of the functional model that will be meta-learned
         self.model_params = torch.nn.ParameterList()
-        for param in base_model.parameters():
+        for param in base_model.parameters():            
             self.model_params.append(torch.nn.Parameter(data=param.data.to(self.base_device),
                                                         requires_grad=param.requires_grad)
-                                )
+                                    )
 
         # NOTE: the learning rates for the inner-loop adaptation are defined in MetaBaseLearner
 
@@ -68,13 +65,7 @@ class MAML(MetaBaseLearner):
             logger.exception(f"Invalid optimizer type: {optimizer_type}")
             raise Exception(f"Invalid optimizer type: {optimizer_type}")
 
-        # number of steps to perform in the inner loop
         self.num_learning_steps = int(num_learning_steps)
-        
-        # set flag to indicate if first-order approximation should be used (à la Reptile)
-        if isinstance(use_first_order, str):
-            use_first_order = eval(use_first_order)
-        self.use_first_order = use_first_order
 
     ###### Helper functions ######
 
@@ -101,7 +92,6 @@ class MAML(MetaBaseLearner):
             init_kwargs['params'] = self.model_params
 
         return init_kwargs
-    
 
     ###### Model training methods ######
 
@@ -162,8 +152,7 @@ class MAML(MetaBaseLearner):
     def run_inner_loop(self, support_batch, query_batch, device=None, *args, **kwargs): 
         """
         Implements the inner loop of the MAML process - clones the parameters of the model 
-        and trains those params using the support_batch for self.num_learning_steps number 
-        of steps using SGD.
+        and trains those params using the support_batch for self.num_learning_steps number of steps.
         
         Args: 
             * support_batch: A dictionary containing the following information for the support set
@@ -199,21 +188,18 @@ class MAML(MetaBaseLearner):
         else:
             init_kwargs = self.get_task_init_kwargs(self.lm_head_init_method, self.lm_head_n,
                                                     data_batch=support_batch, device=device)
-            lm_head = TaskHead.initialize_task_head(task_type='classification',
-                                                    method=self.lm_head_init_method,
-                                                    init_kwargs=init_kwargs)
-            
-        # NOTE: anytime we update the lm head we need to clone the params
-        adapted_lm_head = {key: torch.clone(param) for key, param in lm_head.items()}
+            lm_head_weights = TaskHead.initialize_task_head(task_type='classification',
+                                                            method=self.lm_head_init_method,
+                                                            init_kwargs=init_kwargs)
 
         # adapting params to the support set -> adapted params are phi
-        phi = self._adapt_params(support_batch, 
-                                 params=self.model_params, 
-                                 lm_head_weights=adapted_lm_head,
-                                 learning_rate=self.inner_layers_lr,
-                                 num_inner_steps=self.num_learning_steps,
-                                 clone_params=True,
-                                 optimize_classifier=True)
+        phi, adapted_lm_head_weights = self._adapt_params(support_batch, 
+                                                          params=self.model_params, 
+                                                          lm_head_weights=lm_head_weights,
+                                                          learning_rate=self.inner_layers_lr,
+                                                          num_inner_steps=self.num_learning_steps,
+                                                          optimize_classifier=True,
+                                                          clone_params=True)
 
         # evaluating on the query batch using the adapted params phi  
         self.functional_model.eval()
@@ -224,8 +210,9 @@ class MAML(MetaBaseLearner):
 
         self.functional_model.train()
 
-        _, loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head, 
+        _, loss = self._compute_task_loss(outputs, query_batch, adapted_lm_head_weights, 
                                           task_type='classification')
+        
         return loss
 
 
@@ -280,6 +267,7 @@ class MAML(MetaBaseLearner):
             detached_p.requires_grad = True
             finetuned_task_head_weights[k] = detached_p
 
+        # Setting up optimizer to finetune the model 
         finetune_params = itertools.chain(finetuned_model_params,
                                           finetuned_task_head_weights.values())
         finetune_optimizer = torch.optim.Adam(params=finetune_params)
@@ -287,8 +275,6 @@ class MAML(MetaBaseLearner):
         for batch_idx, data_batch in enumerate(finetune_dataloader):
             data_batch = move_to_device(data_batch, self.base_device)
             finetune_optimizer.zero_grad()
-
-            # run SGD on the finetuned parameters
 
             outputs = self.functional_model.forward(input_ids=data_batch['input_ids'],
                                                     attention_mask=data_batch['attention_mask'],

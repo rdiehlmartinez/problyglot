@@ -8,11 +8,15 @@ import math
 import os
 import re 
 
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+# Requires imports for using adam as the inner optimizer 
+from torch.optim import Adam
+from higher.optim import DifferentiableAdam
 
 from ..taskheads import TaskHead, ClassificationHead
 
@@ -130,7 +134,7 @@ class BaseLearner(torch.nn.Module, metaclass=abc.ABCMeta):
             * loss (int): Loss of data 
         """
 
-        #indexing into sequence layer of model_outputs -> (batch_size, hidden_size) 
+        #indexing into sequence layer of model_outputs -> (batch_size, hidden_size)
         batch_size = model_outputs.size(0)
         last_hidden_state = model_outputs[torch.arange(batch_size),
                                               data_batch['input_target_idx']]
@@ -358,6 +362,7 @@ class MetaBaseLearner(BaseLearner):
     ### Helper function for adapting the functionalized parameters based on some data_batch
     def _adapt_params(self, data_batch, params, lm_head_weights, learning_rate, num_inner_steps,
                             optimize_classifier=False, clone_params=True, evaluation_mode=False,
+                            reference_params=None,
                      ):
         """ 
         Adapted from: 
@@ -370,14 +375,15 @@ class MetaBaseLearner(BaseLearner):
         version of the model that can take in its parameters as an argument
         (as opposed to these parameters being stored in the model's state). 
 
-        The parameters are then updated using SGD with a given learning rate, and returned. 
+        The parameters are then updated using a differntiable version of Adam with a given learning
+        rate that can be set per layer of the model, and are subsequently returned. 
 
         Params:
             * data_batch (dict): Batch of data for a forward pass through the model 
                 (see run_inner_loop for information on the data structure)
             * params (iterable): Iterable of torch.nn.Paramater()s
                 (the params that we want to evaluate our model at)
-            * lm_head_weights (dict): Weights of the lm classification head
+            * lm_head_weights (dict or nn.ParameterDict): Weights of the lm classification head
             * learning_rate (torch.nn.Parameter or torch.nn.ParameterList): The learning rate 
                 used to update the model parameters. Will be a ParameterList if we are storing
                 per-layer specific learning rates. 
@@ -387,18 +393,65 @@ class MetaBaseLearner(BaseLearner):
             * clone_params (bool): Whether to clone the params passed in (defaults to True)
             * evaluation_mode (bool): Whether running this method during evaluation
                 (either in finetuning or inference) (defaults to False)
+            * reference_params (Iterable[torch.nn.Parameter]): An iterable of torch parameters. 
+                Needs to be passed in if the params are not leaf variables, in order for the 
+                differentiable optimizer to be constructed without error. If not passed in,
+                assumed that params are leaf variables.
 
         Returns: 
             * adapted_params (iterable): Iterable of torch.nn.Paramater()s that represent the
-                updated the parameters after running SGD 
+                adapted the parameters.
         """                                        
+        
+        # NOTE: Setting up differentiable optimizers 
 
+        # Optimizer for base parameters
+        if reference_params is None: 
+            reference_params = params
+
+        if isinstance(learning_rate, torch.nn.ParameterList):
+            # Setting up per-layer parameter groups that use unique learning rates
+            layer_to_params = defaultdict(list)
+            for param, layer in zip(reference_params, self.param_idx_to_layer.values()):
+                if not param.requires_grad:
+                    continue 
+                layer_to_params[layer].append(param)
+
+            # Creating the actual param group
+            params_group = []
+            for layer, layer_params in layer_to_params.items():
+                params_group.append({
+                    "params": layer_params,
+                    "lr": learning_rate[layer] if layer is not None else 1e-3
+                })
+            
+            inner_optimizer_params = params_group
+        else: 
+            inner_optimizer_params = [{"params": reference_params, "lr": learning_rate}]
+        
+        base_optimizer = Adam(params=inner_optimizer_params)
+        base_diff_optimizer = DifferentiableAdam(other=base_optimizer,
+                                                 reference_params=reference_params)
+
+        # Optimizer for classification (LM Head) layer
+        if optimize_classifier:
+            lm_head_optimizer = Adam(params=lm_head_weights.values(), lr=self.classifier_lr)
+            lm_head_diff_optimizer = DifferentiableAdam(other=lm_head_optimizer,
+                                                        reference_params=lm_head_weights.values())
+        
+        # NOTE: possibly cloning some parameters 
         if clone_params:
             # copy the parameters but allow gradients to propagate back to original params
-            adapted_params = [torch.clone(p) for p in params]
+            adapted_params = [torch.clone(p) if p.requires_grad else p for p in params]
         else:
             adapted_params = params
 
+        if optimize_classifier:
+            adapted_lm_head_weights = {key: torch.clone(p) for key, p in lm_head_weights.items()}
+        else:
+            adapted_lm_head_weights = lm_head_weights
+
+        # NOTE: Running inner loop model training for num_inner_steps
         for num_step in range(num_inner_steps):
             
             # Running forward pass through functioanl model and computing classificaiton loss
@@ -406,59 +459,20 @@ class MetaBaseLearner(BaseLearner):
                                                     attention_mask=data_batch['attention_mask'],
                                                     params=adapted_params)
 
-            _, loss = self._compute_task_loss(outputs, data_batch, lm_head_weights,
+            _, loss = self._compute_task_loss(outputs, data_batch, adapted_lm_head_weights,
                                               task_type='classification')
 
-            # Computing resulting gradients of the inner loop
-            grad_params = [p for p in adapted_params if p.requires_grad]
 
-            if self.use_first_order or evaluation_mode:
-                grads = torch.autograd.grad(
-                    outputs=loss,
-                    inputs=grad_params,
-                    retain_graph=True,
-                )
-            else:
-                grads = torch.autograd.grad(
-                    outputs=loss,
-                    inputs=grad_params,
-                    create_graph=True,
-                )
+            adapted_params = base_diff_optimizer.step(loss, params=adapted_params)
 
-            # updating params
-            grad_counter = 0
-            for idx, p in enumerate(adapted_params):
-                
-                if isinstance(learning_rate, torch.nn.ParameterList):
-                    # Extracting the layer of the parameter
-                    p_layer = self.param_idx_to_layer[idx]
-                    if p_layer is None: 
-                        # Param is not in a layer we train (e.g. a pooling or embedding layer)
-                        # so the param should not have requires_grad set 
-                        assert(not p.requires_grad),\
-                            f"Model param at idx: {idx} requires grad but has no learning rate"
-                        continue
-                    param_lr = learning_rate[p_layer]
-                else: 
-                    param_lr = learning_rate
-
-                if p.requires_grad:
-                    if param_lr is None: 
-                        logger.exception(f"Inner learning rate for param at idx: {idx} is None")
-                        raise Exception(f"Inner learning rate for param at idx: {idx} is None")
-
-                    adapted_params[idx] = adapted_params[idx] - param_lr * grads[grad_counter]
-                    grad_counter += 1
-
-            # optionally use SGD to update the weights of the final linear classification layer
-            # should only be done once we've already sampled phi weights
             if optimize_classifier:
-                classifier_grads = torch.autograd.grad(
-                    outputs=loss,
-                    inputs=lm_head_weights.values(),
-                )
-                for idx, weight_name in enumerate(lm_head_weights.keys()):
-                    lm_head_weights[weight_name] = lm_head_weights[weight_name] - \
-                                                    self.classifier_lr * classifier_grads[idx]
+                # LM head weights need to be kept in a dictionary - but optimizer expects list 
+                # so we have to convert from dict -> list -> dict 
+                new_lm_head_weights = lm_head_diff_optimizer.step(
+                                                            loss, 
+                                                            params=adapted_lm_head_weights.values()
+                                                            )
+                for idx, weight_name in enumerate(adapted_lm_head_weights.keys()):
+                    adapted_lm_head_weights[weight_name] = new_lm_head_weights[idx]
 
-        return adapted_params
+        return (adapted_params, adapted_lm_head_weights)

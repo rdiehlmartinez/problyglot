@@ -244,7 +244,6 @@ class BaselineLearner(BaseLearner):
             data_batch = move_to_device(data_batch, self.base_device)
             finetune_optimizer.zero_grad()
 
-            # run SGD on the finetuned theta parameters
             outputs = finetuned_model(input_ids=data_batch['input_ids'],
                                       attention_mask=data_batch['attention_mask'],)
 
