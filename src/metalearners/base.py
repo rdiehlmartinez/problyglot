@@ -419,25 +419,30 @@ class MetaBaseLearner(BaseLearner):
 
             # Creating the actual param group
             params_group = []
+            lrs_group = {"lr": []}
+
             for layer, layer_params in layer_to_params.items():
                 params_group.append({
                     "params": layer_params,
-                    "lr": learning_rate[layer] if layer is not None else 1e-3
                 })
-            
+
+                lrs_group['lr'].append(learning_rate[layer] if layer is not None else 1e-3)
+
             inner_optimizer_params = params_group
         else: 
-            inner_optimizer_params = [{"params": reference_params, "lr": learning_rate}]
+            inner_optimizer_params = [{"params": reference_params}]
         
         base_optimizer = Adam(params=inner_optimizer_params)
         base_diff_optimizer = DifferentiableAdam(other=base_optimizer,
-                                                 reference_params=reference_params)
+                                                 reference_params=reference_params,
+                                                 override=lrs_group)
 
         # Optimizer for classification (LM Head) layer
         if optimize_classifier:
-            lm_head_optimizer = Adam(params=lm_head_weights.values(), lr=self.classifier_lr)
+            lm_head_optimizer = Adam(params=lm_head_weights.values())
             lm_head_diff_optimizer = DifferentiableAdam(other=lm_head_optimizer,
-                                                        reference_params=lm_head_weights.values())
+                                                        reference_params=lm_head_weights.values(),
+                                                        override={"lr": [self.classifier_lr]})
         
         # NOTE: possibly cloning some parameters 
         if clone_params:
