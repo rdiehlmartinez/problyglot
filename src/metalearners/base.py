@@ -430,6 +430,7 @@ class MetaBaseLearner(BaseLearner):
 
             inner_optimizer_params = params_group
         else: 
+            lrs_group ={"lr": [learning_rate]}
             inner_optimizer_params = [{"params": reference_params}]
         
         base_optimizer = Adam(params=inner_optimizer_params)
